@@ -165,6 +165,26 @@ func TestUniqueConflict(t *testing.T) {
 	require.ErrorIs(t, err, fluvio.ErrUniqueConflict)
 }
 
+func TestMaxAttemptsValidation(t *testing.T) {
+	_, d := setupPostgres(t)
+	ctx := context.Background()
+
+	_, err := d.Enqueue(ctx, driver.EnqueueParams{
+		Kind:        "bad",
+		Args:        []byte(`{}`),
+		MaxAttempts: -1,
+	})
+	require.ErrorIs(t, err, fluvio.ErrInvalidConfig)
+
+	job, err := d.Enqueue(ctx, driver.EnqueueParams{
+		Kind:        "defaulted",
+		Args:        []byte(`{}`),
+		MaxAttempts: 0,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int16(3), job.MaxAttempts)
+}
+
 func TestPauseQueue(t *testing.T) {
 	_, d := setupPostgres(t)
 	ctx := context.Background()

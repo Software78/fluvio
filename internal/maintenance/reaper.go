@@ -10,28 +10,40 @@ import (
 
 type NackFunc func(ctx context.Context, job *driver.Job, err error, nextAttemptAt time.Time) error
 
+type retryDelayFunc func(attempt int16, maxDelay time.Duration) time.Duration
+
 type Reaper struct {
-	driver   driver.Driver
-	logger   *slog.Logger
-	timeout  time.Duration
-	interval time.Duration
-	nack     NackFunc
-	stopCh   chan struct{}
-	doneCh   chan struct{}
+	driver        driver.Driver
+	logger        *slog.Logger
+	timeout       time.Duration
+	interval      time.Duration
+	maxRetryDelay time.Duration
+	retryDelay    retryDelayFunc
+	nack          NackFunc
+	stopCh        chan struct{}
+	doneCh        chan struct{}
 }
 
-func NewReaper(d driver.Driver, logger *slog.Logger, timeout, interval time.Duration, nack NackFunc) *Reaper {
+func NewReaper(
+	d driver.Driver,
+	logger *slog.Logger,
+	timeout, interval, maxRetryDelay time.Duration,
+	retryDelay retryDelayFunc,
+	nack NackFunc,
+) *Reaper {
 	if interval == 0 {
 		interval = 60 * time.Second
 	}
 	return &Reaper{
-		driver:   d,
-		logger:   logger,
-		timeout:  timeout,
-		interval: interval,
-		nack:     nack,
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
+		driver:        d,
+		logger:        logger,
+		timeout:       timeout,
+		interval:      interval,
+		maxRetryDelay: maxRetryDelay,
+		retryDelay:    retryDelay,
+		nack:          nack,
+		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
 	}
 }
 
@@ -67,11 +79,13 @@ func (r *Reaper) reap() {
 		return
 	}
 	for _, job := range jobs {
-		err := r.nack(ctx, job, errStuckJob, time.Now())
+		delay := r.retryDelay(job.Attempt, r.maxRetryDelay)
+		nextAt := time.Now().UTC().Add(delay)
+		err := r.nack(ctx, job, errStuckJob, nextAt)
 		if err != nil {
 			r.logger.Error("reap nack failed", "job_id", job.ID, "error", err)
 		} else {
-			r.logger.Info("reaped stuck job", "job_id", job.ID)
+			r.logger.Info("reaped stuck job", "job_id", job.ID, "retry_at", nextAt)
 		}
 	}
 }

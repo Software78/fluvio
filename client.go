@@ -110,6 +110,8 @@ func (c *Client) Start(ctx context.Context) error {
 		c.cfg.Logger,
 		c.cfg.JobTimeout,
 		60*time.Second,
+		c.cfg.MaxRetryDelay,
+		DefaultRetryDelay,
 		c.nackJob,
 	)
 
@@ -323,6 +325,11 @@ func (c *Client) QueueStats(ctx context.Context, queue string) (*driver.QueueSta
 
 func (c *Client) ListQueues(ctx context.Context) ([]*driver.QueueStats, error) {
 	return c.driver.ListQueues(ctx)
+}
+
+// UniqueJobExists reports whether an active job with the given unique key exists.
+func (c *Client) UniqueJobExists(ctx context.Context, uniqueKey string) (bool, error) {
+	return c.driver.UniqueJobExists(ctx, uniqueKey)
 }
 
 func (c *Client) Migrate(ctx context.Context) error {

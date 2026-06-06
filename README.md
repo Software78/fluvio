@@ -103,6 +103,8 @@ tx.Commit(ctx) // job visible only after commit
 
 `EnqueueMany` runs all inserts in one transaction. If any row fails (including a unique-key conflict), the entire batch is rolled back and no jobs are inserted.
 
+Use `UniqueJobExists` to check for an active job with a given unique key before enqueueing.
+
 ### 4. Web UI
 
 ```go

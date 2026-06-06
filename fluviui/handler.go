@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -152,7 +153,7 @@ func (s *server) renderPage(w http.ResponseWriter, data pageData) {
 		pageData
 		Content template.HTML
 	}{data, template.HTML(content)}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to render page", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -162,7 +163,7 @@ func (s *server) renderPage(w http.ResponseWriter, data pageData) {
 func (s *server) apiQueues(w http.ResponseWriter, r *http.Request) {
 	stats, err := s.inspector.ListQueues(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeAPIError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
@@ -176,7 +177,7 @@ func (s *server) apiJobs(w http.ResponseWriter, r *http.Request) {
 		50, 0,
 	)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeAPIError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, jobs)
@@ -190,7 +191,11 @@ func (s *server) apiJob(w http.ResponseWriter, r *http.Request, idStr string) {
 	}
 	job, err := s.inspector.GetJob(r.Context(), id)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if errors.Is(err, fluvio.ErrJobNotFound) {
+			status = http.StatusNotFound
+		}
+		writeAPIError(w, status, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
@@ -204,7 +209,7 @@ func (s *server) apiPause(w http.ResponseWriter, r *http.Request, queue string, 
 		err = s.inspector.ResumeQueue(r.Context(), queue)
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeAPIError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -249,6 +254,29 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeAPIError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{"error": apiErrorMessage(status, err)})
+}
+
+func apiErrorMessage(status int, err error) string {
+	if err == nil {
+		return "unknown error"
+	}
+	switch {
+	case errors.Is(err, fluvio.ErrJobNotFound):
+		return "job not found"
+	case errors.Is(err, fluvio.ErrInvalidJobState):
+		return "invalid job state"
+	case errors.Is(err, fluvio.ErrInvalidConfig):
+		return "invalid request"
+	default:
+		if status == http.StatusNotFound {
+			return "not found"
+		}
+		return "internal server error"
+	}
 }
 
 const layoutHTML = `<!DOCTYPE html>

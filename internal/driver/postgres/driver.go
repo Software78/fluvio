@@ -53,12 +53,15 @@ func scanJobs(rows pgx.Rows) ([]*driver.Job, error) {
 	return jobs, rows.Err()
 }
 
-func normalizeEnqueueParams(p driver.EnqueueParams) driver.EnqueueParams {
+func normalizeEnqueueParams(p driver.EnqueueParams) (driver.EnqueueParams, error) {
 	if p.Queue == "" {
 		p.Queue = driver.QueueDefault
 	}
 	if p.Priority == 0 {
 		p.Priority = 1
+	}
+	if p.MaxAttempts < 0 {
+		return p, fmt.Errorf("%w: max_attempts must be at least 1", fluvio.ErrInvalidConfig)
 	}
 	if p.MaxAttempts == 0 {
 		p.MaxAttempts = 3
@@ -72,7 +75,7 @@ func normalizeEnqueueParams(p driver.EnqueueParams) driver.EnqueueParams {
 	if p.Tags == nil {
 		p.Tags = []string{}
 	}
-	return p
+	return p, nil
 }
 
 func initialState(p driver.EnqueueParams) string {
@@ -98,7 +101,11 @@ func validateJobState(state string) error {
 }
 
 func (d *Driver) Enqueue(ctx context.Context, p driver.EnqueueParams) (*driver.Job, error) {
-	return d.enqueueWithQuerier(ctx, d.pool, normalizeEnqueueParams(p))
+	p, err := normalizeEnqueueParams(p)
+	if err != nil {
+		return nil, err
+	}
+	return d.enqueueWithQuerier(ctx, d.pool, p)
 }
 
 func (d *Driver) EnqueueTx(ctx context.Context, tx driver.Tx, p driver.EnqueueParams) (*driver.Job, error) {
@@ -106,10 +113,17 @@ func (d *Driver) EnqueueTx(ctx context.Context, tx driver.Tx, p driver.EnqueuePa
 	if !ok {
 		return nil, errors.New("fluvio/postgres: tx must be pgx.Tx")
 	}
-	return d.enqueueWithQuerier(ctx, pgxTx, normalizeEnqueueParams(p))
+	p, err := normalizeEnqueueParams(p)
+	if err != nil {
+		return nil, err
+	}
+	return d.enqueueWithQuerier(ctx, pgxTx, p)
 }
 
 func (d *Driver) enqueueWithQuerier(ctx context.Context, q pgxQuerier, p driver.EnqueueParams) (*driver.Job, error) {
+	if p.MaxAttempts < 1 {
+		return nil, fmt.Errorf("%w: max_attempts must be at least 1", fluvio.ErrInvalidConfig)
+	}
 	state := initialState(p)
 	scheduledAt := time.Now().UTC()
 	if p.ScheduledAt != nil {
@@ -557,7 +571,11 @@ func (d *Driver) EnqueueMany(ctx context.Context, params []driver.EnqueueParams)
 
 	jobs := make([]*driver.Job, 0, len(params))
 	for _, p := range params {
-		job, err := d.enqueueWithQuerier(ctx, tx, normalizeEnqueueParams(p))
+		p, err := normalizeEnqueueParams(p)
+		if err != nil {
+			return nil, err
+		}
+		job, err := d.enqueueWithQuerier(ctx, tx, p)
 		if err != nil {
 			return nil, err
 		}

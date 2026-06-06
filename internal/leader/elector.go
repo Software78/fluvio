@@ -15,15 +15,18 @@ type LeaderCallbacks struct {
 }
 
 type Elector struct {
-	driver    driver.Driver
-	logger    *slog.Logger
-	callbacks LeaderCallbacks
-	interval  time.Duration
-	renew     time.Duration
-	stopCh    chan struct{}
-	doneCh    chan struct{}
-	mu        sync.Mutex
-	isLeader  bool
+	driver      driver.Driver
+	logger      *slog.Logger
+	callbacks   LeaderCallbacks
+	interval    time.Duration
+	renew       time.Duration
+	stopCh      chan struct{}
+	doneCh      chan struct{}
+	mu          sync.Mutex
+	isLeader    bool
+	renewMu     sync.Mutex
+	renewCancel context.CancelFunc
+	renewWG     sync.WaitGroup
 }
 
 func NewElector(d driver.Driver, logger *slog.Logger, callbacks LeaderCallbacks) *Elector {
@@ -44,6 +47,7 @@ func (e *Elector) Start() {
 
 func (e *Elector) Stop() {
 	close(e.stopCh)
+	e.stopRenewLoop()
 	<-e.doneCh
 	_ = e.driver.ReleaseLeader(context.Background())
 }
@@ -76,7 +80,7 @@ func (e *Elector) run() {
 				if e.callbacks.OnAcquire != nil {
 					e.callbacks.OnAcquire()
 				}
-				go e.renewLoop()
+				e.startRenewLoop()
 			}
 		}
 
@@ -88,13 +92,50 @@ func (e *Elector) run() {
 	}
 }
 
-func (e *Elector) renewLoop() {
+func (e *Elector) startRenewLoop() {
+	e.renewMu.Lock()
+	defer e.renewMu.Unlock()
+	e.stopRenewLoopLocked()
+	ctx, cancel := context.WithCancel(context.Background())
+	e.renewCancel = cancel
+	e.renewWG.Add(1)
+	go func() {
+		defer e.renewWG.Done()
+		e.renewLoop(ctx)
+	}()
+}
+
+func (e *Elector) cancelRenewLoop() {
+	e.renewMu.Lock()
+	defer e.renewMu.Unlock()
+	if e.renewCancel != nil {
+		e.renewCancel()
+	}
+}
+
+func (e *Elector) stopRenewLoop() {
+	e.renewMu.Lock()
+	defer e.renewMu.Unlock()
+	e.stopRenewLoopLocked()
+}
+
+func (e *Elector) stopRenewLoopLocked() {
+	if e.renewCancel != nil {
+		e.renewCancel()
+		e.renewWG.Wait()
+		e.renewCancel = nil
+	}
+}
+
+func (e *Elector) renewLoop(ctx context.Context) {
 	ticker := time.NewTicker(e.renew)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-e.stopCh:
+			return
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			e.mu.Lock()
@@ -121,6 +162,9 @@ func (e *Elector) handleLoss() {
 	}
 	e.isLeader = false
 	e.mu.Unlock()
+
+	e.cancelRenewLoop()
+
 	e.logger.Warn("lost leader lock")
 	if e.callbacks.OnLoss != nil {
 		e.callbacks.OnLoss()

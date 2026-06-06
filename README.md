@@ -104,6 +104,33 @@ tx.Commit(ctx) // job visible only after commit
 
 Use `UniqueJobExists` to check for an active job with a given unique key before enqueueing.
 
+### 4. Web API
+
+Mount the REST API and SSE stream for a separate UI or admin tool:
+
+```go
+import "github.com/software78/fluvio/fluviui"
+
+// Production — restrict origin
+mux.Handle("/fluvio/", fluviui.Handler(client,
+    fluviui.WithAllowedOrigin("https://your-ui.example.com"),
+))
+
+// Development — allow all origins (default)
+mux.Handle("/fluvio/", fluviui.Handler(client))
+```
+
+Endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/fluvio/api/queues` | List queue stats |
+| POST | `/fluvio/api/queues/{name}/pause` | Pause a queue |
+| POST | `/fluvio/api/queues/{name}/resume` | Resume a queue |
+| GET | `/fluvio/api/jobs` | List jobs (`queue`, `state`, `kind` query params) |
+| GET | `/fluvio/api/jobs/{id}` | Get job details |
+| GET | `/fluvio/api/events` | SSE stream of queue stats (every 5s) |
+
 ## CLI
 
 ```bash

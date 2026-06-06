@@ -54,6 +54,7 @@ func handlerFor(client apiClient, opts ...Option) http.Handler {
 	cm := corsMiddleware(cfg)
 
 	mux.Handle("/fluvio/api/events", cm(sseHandler(client)))
+	mux.Handle("/fluvio/api/workers", cm(workersHandler(client)))
 	mux.Handle("/fluvio/api/jobs", cm(jobsHandler(client)))
 	mux.Handle("/fluvio/api/jobs/", cm(jobDetailHandler(client)))
 	mux.Handle("/fluvio/api/queues", cm(queuesHandler(client)))

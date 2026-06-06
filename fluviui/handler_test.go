@@ -37,6 +37,9 @@ func (mockClient) GetJob(ctx context.Context, id int64) (*fluvio.JobRow, error) 
 
 func (mockClient) PauseQueue(ctx context.Context, queue string) error  { return nil }
 func (mockClient) ResumeQueue(ctx context.Context, queue string) error { return nil }
+func (mockClient) ListWorkers(ctx context.Context) ([]fluvio.WorkerInstance, error) {
+	return nil, nil
+}
 
 type errorClient struct{}
 
@@ -54,6 +57,9 @@ func (errorClient) GetJob(ctx context.Context, id int64) (*fluvio.JobRow, error)
 
 func (errorClient) PauseQueue(ctx context.Context, queue string) error  { return nil }
 func (errorClient) ResumeQueue(ctx context.Context, queue string) error { return nil }
+func (errorClient) ListWorkers(ctx context.Context) ([]fluvio.WorkerInstance, error) {
+	return nil, nil
+}
 
 type pagingClient struct {
 	lastLimit  int
@@ -84,6 +90,9 @@ func (c *pagingClient) GetJob(ctx context.Context, id int64) (*fluvio.JobRow, er
 
 func (c *pagingClient) PauseQueue(ctx context.Context, queue string) error  { return nil }
 func (c *pagingClient) ResumeQueue(ctx context.Context, queue string) error { return nil }
+func (c *pagingClient) ListWorkers(ctx context.Context) ([]fluvio.WorkerInstance, error) {
+	return nil, nil
+}
 
 func TestHandlerAPIQueues(t *testing.T) {
 	h := handlerFor(mockClient{})

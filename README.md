@@ -106,7 +106,7 @@ Use `UniqueJobExists` to check for an active job with a given unique key before 
 
 ### 4. Web API
 
-Mount the REST API and SSE stream for a separate UI or admin tool:
+Mount the REST API and SSE stream for [Fluvio UI](https://github.com/Software78/fluvio_ui) or another admin tool:
 
 ```go
 import "github.com/software78/fluvio/fluviui"

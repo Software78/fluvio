@@ -26,6 +26,7 @@ type apiClient interface {
 	GetJob(ctx context.Context, id int64) (*fluvio.JobRow, error)
 	PauseQueue(ctx context.Context, queue string) error
 	ResumeQueue(ctx context.Context, queue string) error
+	ListWorkers(ctx context.Context) ([]fluvio.WorkerInstance, error)
 }
 
 // QueueStatsView mirrors driver stats for JSON API responses.
@@ -38,6 +39,14 @@ type QueueStatsView struct {
 	Completed int64  `json:"completed"`
 	Failed    int64  `json:"failed"`
 	Paused    bool   `json:"paused"`
+}
+
+// WorkerView mirrors fleet registry entries for JSON API responses.
+type WorkerView struct {
+	ID        string         `json:"id"`
+	Queues    map[string]int `json:"queues"`
+	StartedAt time.Time      `json:"started_at"`
+	LastSeen  time.Time      `json:"last_seen"`
 }
 
 // JobsPage is a paginated jobs list response.
@@ -91,6 +100,24 @@ func queuesHandler(client apiClient) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, stats)
+	})
+}
+
+func workersHandler(client apiClient) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		workers, err := client.ListWorkers(r.Context())
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		out := make([]WorkerView, len(workers))
+		for i, w := range workers {
+			out[i] = WorkerView{
+				ID: w.ID, Queues: w.Queues,
+				StartedAt: w.StartedAt, LastSeen: w.LastSeen,
+			}
+		}
+		writeJSON(w, http.StatusOK, out)
 	})
 }
 

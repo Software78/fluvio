@@ -1,0 +1,130 @@
+package leader
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/software78/fluvio/internal/driver"
+)
+
+type LeaderCallbacks struct {
+	OnAcquire func()
+	OnLoss    func()
+}
+
+type Elector struct {
+	driver    driver.Driver
+	logger    *slog.Logger
+	callbacks LeaderCallbacks
+	interval  time.Duration
+	renew     time.Duration
+	stopCh    chan struct{}
+	doneCh    chan struct{}
+	mu        sync.Mutex
+	isLeader  bool
+}
+
+func NewElector(d driver.Driver, logger *slog.Logger, callbacks LeaderCallbacks) *Elector {
+	return &Elector{
+		driver:    d,
+		logger:    logger,
+		callbacks: callbacks,
+		interval:  5 * time.Second,
+		renew:     30 * time.Second,
+		stopCh:    make(chan struct{}),
+		doneCh:    make(chan struct{}),
+	}
+}
+
+func (e *Elector) Start() {
+	go e.run()
+}
+
+func (e *Elector) Stop() {
+	close(e.stopCh)
+	<-e.doneCh
+	if e.isLeader {
+		_ = e.driver.ReleaseLeader(context.Background())
+	}
+}
+
+func (e *Elector) run() {
+	defer close(e.doneCh)
+	ticker := time.NewTicker(e.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-e.stopCh:
+			return
+		default:
+		}
+
+		e.mu.Lock()
+		leader := e.isLeader
+		e.mu.Unlock()
+
+		if !leader {
+			acquired, err := e.driver.TryAcquireLeader(context.Background())
+			if err != nil {
+				e.logger.Error("leader election failed", "error", err)
+			} else if acquired {
+				e.mu.Lock()
+				e.isLeader = true
+				e.mu.Unlock()
+				e.logger.Info("acquired leader lock")
+				if e.callbacks.OnAcquire != nil {
+					e.callbacks.OnAcquire()
+				}
+				go e.renewLoop()
+			}
+		}
+
+		select {
+		case <-e.stopCh:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (e *Elector) renewLoop() {
+	ticker := time.NewTicker(e.renew)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-e.stopCh:
+			return
+		case <-ticker.C:
+			e.mu.Lock()
+			if !e.isLeader {
+				e.mu.Unlock()
+				return
+			}
+			e.mu.Unlock()
+
+			if err := e.driver.RenewLeader(context.Background()); err != nil {
+				e.logger.Error("leader renew failed", "error", err)
+				e.handleLoss()
+				return
+			}
+		}
+	}
+}
+
+func (e *Elector) handleLoss() {
+	e.mu.Lock()
+	if !e.isLeader {
+		e.mu.Unlock()
+		return
+	}
+	e.isLeader = false
+	e.mu.Unlock()
+	e.logger.Warn("lost leader lock")
+	if e.callbacks.OnLoss != nil {
+		e.callbacks.OnLoss()
+	}
+}

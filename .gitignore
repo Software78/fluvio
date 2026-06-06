@@ -1,0 +1,17 @@
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+/dist/
+/vendor/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+coverage.out
+coverage.html
+*_templ.go

@@ -122,7 +122,11 @@ func TestNackRetryAndDead(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, jobs, 1)
 
-	require.NoError(t, d.Nack(ctx, jobs[0].ID, errTest, time.Now().Add(time.Second)))
+	require.NoError(t, d.Nack(ctx, jobs[0].ID, errTest, time.Now()))
+
+	n, err := d.TickScheduled(ctx, time.Now())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n)
 
 	jobs, err = d.Fetch(ctx, []string{"default"}, "w1", 1)
 	require.NoError(t, err)
@@ -209,15 +213,15 @@ func TestTickScheduled(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(0), n)
 
-	due := time.Now().Add(-time.Second)
+	dueTime := time.Now().Add(5 * time.Second)
 	_, err = d.Enqueue(ctx, driver.EnqueueParams{
 		Kind:        "due",
 		Args:        []byte(`{}`),
-		ScheduledAt: &due,
+		ScheduledAt: &dueTime,
 	})
 	require.NoError(t, err)
 
-	n, err = d.TickScheduled(ctx, time.Now())
+	n, err = d.TickScheduled(ctx, dueTime.Add(time.Second))
 	require.NoError(t, err)
 	require.Equal(t, int64(1), n)
 }

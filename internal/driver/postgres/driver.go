@@ -67,6 +67,9 @@ func normalizeEnqueueParams(p driver.EnqueueParams) driver.EnqueueParams {
 	if len(p.Metadata) == 0 {
 		p.Metadata = []byte("{}")
 	}
+	if p.Tags == nil {
+		p.Tags = []string{}
+	}
 	return p
 }
 

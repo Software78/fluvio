@@ -5,6 +5,8 @@ package fluvio_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,8 +120,9 @@ func TestMiddlewareAndErrorHandler(t *testing.T) {
 	pool, _, _ := setupIntegration(t)
 	ctx := context.Background()
 
+	var mu sync.Mutex
 	var middlewareOrder []string
-	var errorHandled bool
+	var errorHandled atomic.Bool
 
 	workers := fluvio.NewWorkers()
 	fluvio.AddWorker(workers, &FailWorker{})
@@ -131,13 +134,15 @@ func TestMiddlewareAndErrorHandler(t *testing.T) {
 		Middleware: []fluvio.JobMiddleware{
 			func(next func(context.Context) error) func(context.Context) error {
 				return func(ctx context.Context) error {
+					mu.Lock()
 					middlewareOrder = append(middlewareOrder, "mw1")
+					mu.Unlock()
 					return next(ctx)
 				}
 			},
 		},
 		ErrorHandler: func(ctx context.Context, job fluvio.JobRow, err error) {
-			errorHandled = true
+			errorHandled.Store(true)
 		},
 	})
 	require.NoError(t, err)
@@ -148,7 +153,9 @@ func TestMiddlewareAndErrorHandler(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		return len(middlewareOrder) == 1 && errorHandled
+		mu.Lock()
+		defer mu.Unlock()
+		return len(middlewareOrder) == 1 && errorHandled.Load()
 	}, 5*time.Second, 100*time.Millisecond)
 }
 

@@ -88,6 +88,11 @@ func (m *mockDriver) ListQueues(context.Context) ([]*driver.QueueStats, error) {
 func (m *mockDriver) StuckJobs(context.Context, time.Duration) ([]*driver.Job, error) {
 	return nil, nil
 }
+func (m *mockDriver) UpsertWorker(context.Context, string, map[string]int) error { return nil }
+func (m *mockDriver) RemoveWorker(context.Context, string) error { return nil }
+func (m *mockDriver) ListWorkers(context.Context, time.Duration) ([]*driver.WorkerInstance, error) {
+	return nil, nil
+}
 func (m *mockDriver) Migrate(context.Context) error { return nil }
 func (m *mockDriver) MigrateDown(context.Context, int) error { return nil }
 func (m *mockDriver) MigrationStatus(context.Context) ([]string, error) { return nil, nil }

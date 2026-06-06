@@ -64,6 +64,11 @@ func (f *fakeDriver) ReleaseLeader(context.Context) error { return nil }
 func (f *fakeDriver) StuckJobs(context.Context, time.Duration) ([]*driver.Job, error) {
 	return nil, nil
 }
+func (f *fakeDriver) UpsertWorker(context.Context, string, map[string]int) error { return nil }
+func (f *fakeDriver) RemoveWorker(context.Context, string) error { return nil }
+func (f *fakeDriver) ListWorkers(context.Context, time.Duration) ([]*driver.WorkerInstance, error) {
+	return nil, nil
+}
 func (f *fakeDriver) Migrate(context.Context) error { return nil }
 func (f *fakeDriver) MigrateDown(context.Context, int) error { return nil }
 func (f *fakeDriver) MigrationStatus(context.Context) ([]string, error) { return nil, nil }

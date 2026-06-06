@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -114,5 +115,26 @@ func inspectCmd(args []string) {
 	for _, s := range stats {
 		fmt.Printf("%s: pending=%d running=%d scheduled=%d dead=%d paused=%v\n",
 			s.Queue, s.Pending, s.Running, s.Scheduled, s.Dead, s.Paused)
+	}
+
+	workers, err := d.ListWorkers(ctx, 90*time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "inspect workers: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("\nworkers (%d live):\n", len(workers))
+	capacity := map[string]int{}
+	for _, w := range workers {
+		fmt.Printf("  %s: queues=%v started=%s last_seen=%s\n",
+			w.ID, w.Queues, w.StartedAt.Format(time.RFC3339), w.LastSeen.Format(time.RFC3339))
+		for queue, max := range w.Queues {
+			capacity[queue] += max
+		}
+	}
+	if len(capacity) > 0 {
+		fmt.Println("\nfleet capacity:")
+		for queue, total := range capacity {
+			fmt.Printf("  %s: max_concurrent=%d\n", queue, total)
+		}
 	}
 }

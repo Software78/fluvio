@@ -158,7 +158,15 @@ make build   # outputs bin/fluvio
 | `JobTimeout` | 30m | Max running time before reaper nacks |
 | `MaxRetryDelay` | 24h | Cap on exponential backoff |
 | `PeriodicInterval` | 30s | Tick interval for in-memory cron jobs |
-| `WorkerID` | `{hostname}-{pid}` | Identifier stored in `attempted_by` |
+| `WorkerID` | `{hostname}-{pid}` | Instance identifier stored in `attempted_by` and the fleet registry |
+| `WorkerHeartbeatInterval` | 30s | How often processing clients heartbeat to the fleet registry |
+| `WorkerTTL` | 90s | Staleness threshold when listing live workers via `ListWorkers` |
+
+Set `WorkerID` explicitly in production so job pickup and fleet visibility are stable across restarts (e.g. `"api-worker-" + os.Getenv("HOSTNAME")`). Use `fluvio.DefaultWorkerID()` for the built-in default.
+
+Each `Job` passed to `Work()` includes `WorkerID` (this instance), `MaxWorkers` (local queue concurrency), and `AttemptedBy` (claim history). Use `job.ClaimedBy()` for the worker that claimed the current attempt.
+
+Processing clients with at least one queue where `MaxWorkers > 0` register in the `fluvio_workers` table. Query the fleet with `client.ListWorkers(ctx)` or `client.QueueWorkerCapacity(ctx, queue)`.
 
 Per-queue `MaxWorkers` controls concurrency — each queue gets its own fetch loop capped at that limit. Set `MaxWorkers` to 0 to disable processing for a queue. Omit queues entirely for insert-only clients.
 

@@ -52,6 +52,11 @@ func (d *reaperDriver) ListQueues(context.Context) ([]*driver.QueueStats, error)
 func (d *reaperDriver) TryAcquireLeader(context.Context) (bool, error) { return false, nil }
 func (d *reaperDriver) RenewLeader(context.Context) error { return nil }
 func (d *reaperDriver) ReleaseLeader(context.Context) error { return nil }
+func (d *reaperDriver) UpsertWorker(context.Context, string, map[string]int) error { return nil }
+func (d *reaperDriver) RemoveWorker(context.Context, string) error { return nil }
+func (d *reaperDriver) ListWorkers(context.Context, time.Duration) ([]*driver.WorkerInstance, error) {
+	return nil, nil
+}
 func (d *reaperDriver) Migrate(context.Context) error { return nil }
 func (d *reaperDriver) MigrateDown(context.Context, int) error { return nil }
 func (d *reaperDriver) MigrationStatus(context.Context) ([]string, error) { return nil, nil }

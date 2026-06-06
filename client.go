@@ -12,6 +12,7 @@ import (
 	"github.com/software78/fluvio/internal/leader"
 	"github.com/software78/fluvio/internal/maintenance"
 	"github.com/software78/fluvio/internal/scheduler"
+	"github.com/software78/fluvio/internal/workerregistry"
 )
 
 type queueRunner struct {
@@ -34,6 +35,7 @@ type Client struct {
 	stopCh    chan struct{}
 
 	queueRunners []*queueRunner
+	registry     *workerregistry.Registry
 	elector      *leader.Elector
 	sched        *scheduler.Scheduler
 	periodic     *scheduler.Periodic
@@ -104,6 +106,17 @@ func (c *Client) Start(ctx context.Context) error {
 		qr.loop.Start()
 	}
 
+	if queues := processingQueues(c.cfg.Queues); len(queues) > 0 {
+		c.registry = workerregistry.New(
+			c.driver,
+			c.cfg.WorkerID,
+			queues,
+			c.cfg.WorkerHeartbeatInterval,
+			c.cfg.Logger,
+		)
+		c.registry.Start()
+	}
+
 	c.sched = scheduler.New(c.driver, c.cfg.Logger, 5*time.Second)
 	c.reaper = maintenance.NewReaper(
 		c.driver,
@@ -143,6 +156,11 @@ func (c *Client) StopContext(ctx context.Context) error {
 
 	close(c.stopCh)
 	c.stopLeaderServices()
+
+	if c.registry != nil {
+		c.registry.Stop()
+		c.registry = nil
+	}
 
 	if c.elector != nil {
 		c.elector.Stop()
@@ -327,6 +345,35 @@ func (c *Client) ListQueues(ctx context.Context) ([]*driver.QueueStats, error) {
 	return c.driver.ListQueues(ctx)
 }
 
+// ListWorkers returns live processing clients registered in the fleet.
+func (c *Client) ListWorkers(ctx context.Context) ([]WorkerInstance, error) {
+	workers, err := c.driver.ListWorkers(ctx, c.cfg.WorkerTTL)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WorkerInstance, len(workers))
+	for i, w := range workers {
+		out[i] = *w
+	}
+	return out, nil
+}
+
+// QueueWorkerCapacity returns the number of live worker instances and total
+// concurrent job capacity for the given queue across the fleet.
+func (c *Client) QueueWorkerCapacity(ctx context.Context, queue string) (instances, maxConcurrent int, err error) {
+	workers, err := c.ListWorkers(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, w := range workers {
+		if cap, ok := w.Queues[queue]; ok && cap > 0 {
+			instances++
+			maxConcurrent += cap
+		}
+	}
+	return instances, maxConcurrent, nil
+}
+
 // UniqueJobExists reports whether an active job with the given unique key exists.
 func (c *Client) UniqueJobExists(ctx context.Context, uniqueKey string) (bool, error) {
 	return c.driver.UniqueJobExists(ctx, uniqueKey)
@@ -347,6 +394,10 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 		return err
 	}
 
+	maxWorkers := 0
+	if qc, ok := c.cfg.Queues[dJob.Queue]; ok {
+		maxWorkers = qc.MaxWorkers
+	}
 	wrap := &driverJobWrapper{
 		id:          dJob.ID,
 		queue:       dJob.Queue,
@@ -354,6 +405,9 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 		args:        dJob.Args,
 		attempt:     dJob.Attempt,
 		maxAttempts: dJob.MaxAttempts,
+		attemptedBy: dJob.AttemptedBy,
+		workerID:    c.cfg.WorkerID,
+		maxWorkers:  maxWorkers,
 	}
 
 	run := func(ctx context.Context) error {
@@ -396,6 +450,16 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 
 func (c *Client) nackJob(ctx context.Context, dJob *driver.Job, err error, nextAt time.Time) error {
 	return c.driver.Nack(ctx, dJob.ID, err, nextAt)
+}
+
+func processingQueues(queues map[string]QueueConfig) map[string]int {
+	out := make(map[string]int)
+	for name, qc := range queues {
+		if qc.MaxWorkers > 0 {
+			out[name] = qc.MaxWorkers
+		}
+	}
+	return out
 }
 
 func driverJobToRow(job *driver.Job) JobRow {

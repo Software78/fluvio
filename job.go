@@ -38,6 +38,8 @@ type Job[T JobArgs] struct {
 	Attempt       int16
 	MaxAttempts   int16
 	AttemptedBy   []string
+	WorkerID      string // ID of the processing instance that claimed this job.
+	MaxWorkers    int    // Local concurrency cap for this job's queue on this instance.
 	ScheduledAt   time.Time
 	AttemptedAt   *time.Time
 	FinalizedAt   *time.Time
@@ -105,6 +107,14 @@ type JobRow struct {
 	Tags        []string
 	UniqueKey   *string
 	Metadata    json.RawMessage
+}
+
+// ClaimedBy returns the worker ID that claimed the current attempt, or "" if none.
+func (j *Job[T]) ClaimedBy() string {
+	if len(j.AttemptedBy) == 0 {
+		return ""
+	}
+	return j.AttemptedBy[len(j.AttemptedBy)-1]
 }
 
 func (j *Job[T]) Row() JobRow {

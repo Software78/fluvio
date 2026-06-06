@@ -558,6 +558,58 @@ func (d *Driver) StuckJobs(ctx context.Context, timeout time.Duration) ([]*drive
 	return scanJobs(rows)
 }
 
+func (d *Driver) UpsertWorker(ctx context.Context, workerID string, queues map[string]int) error {
+	if queues == nil {
+		queues = map[string]int{}
+	}
+	queuesJSON, err := json.Marshal(queues)
+	if err != nil {
+		return err
+	}
+	_, err = d.pool.Exec(ctx, `
+		INSERT INTO fluvio_workers (worker_id, queues, started_at, last_seen)
+		VALUES ($1, $2, now(), now())
+		ON CONFLICT (worker_id) DO UPDATE SET
+			queues = EXCLUDED.queues,
+			last_seen = now()
+	`, workerID, queuesJSON)
+	return err
+}
+
+func (d *Driver) RemoveWorker(ctx context.Context, workerID string) error {
+	_, err := d.pool.Exec(ctx, `DELETE FROM fluvio_workers WHERE worker_id = $1`, workerID)
+	return err
+}
+
+func (d *Driver) ListWorkers(ctx context.Context, staleAfter time.Duration) ([]*driver.WorkerInstance, error) {
+	interval := fmt.Sprintf("%d seconds", int64(staleAfter.Seconds()))
+	rows, err := d.pool.Query(ctx, `
+		SELECT worker_id, queues, started_at, last_seen
+		FROM fluvio_workers
+		WHERE last_seen > now() - $1::interval
+		ORDER BY worker_id
+	`, interval)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []*driver.WorkerInstance
+	for rows.Next() {
+		var w driver.WorkerInstance
+		var queuesJSON []byte
+		if err := rows.Scan(&w.ID, &queuesJSON, &w.StartedAt, &w.LastSeen); err != nil {
+			return nil, err
+		}
+		w.Queues = map[string]int{}
+		if len(queuesJSON) > 0 {
+			_ = json.Unmarshal(queuesJSON, &w.Queues)
+		}
+		workers = append(workers, &w)
+	}
+	return workers, rows.Err()
+}
+
 func (d *Driver) EnqueueMany(ctx context.Context, params []driver.EnqueueParams) ([]*driver.Job, error) {
 	if len(params) == 0 {
 		return nil, nil

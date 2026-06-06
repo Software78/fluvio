@@ -62,6 +62,11 @@ func (d *recordingDriver) ReleaseLeader(context.Context) error { return nil }
 func (d *recordingDriver) StuckJobs(context.Context, time.Duration) ([]*driver.Job, error) {
 	return nil, nil
 }
+func (d *recordingDriver) UpsertWorker(context.Context, string, map[string]int) error { return nil }
+func (d *recordingDriver) RemoveWorker(context.Context, string) error { return nil }
+func (d *recordingDriver) ListWorkers(context.Context, time.Duration) ([]*driver.WorkerInstance, error) {
+	return nil, nil
+}
 func (d *recordingDriver) Migrate(context.Context) error { return nil }
 func (d *recordingDriver) MigrateDown(context.Context, int) error { return nil }
 func (d *recordingDriver) MigrationStatus(context.Context) ([]string, error) { return nil, nil }

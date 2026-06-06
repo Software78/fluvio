@@ -26,10 +26,12 @@ func (HelloArgs) Kind() string { return "hello" }
 
 type HelloWorker struct {
 	fluvio.WorkerDefaults[HelloArgs]
-	done chan int64
+	done   chan int64
+	lastJob atomic.Pointer[fluvio.Job[HelloArgs]]
 }
 
 func (w *HelloWorker) Work(ctx context.Context, job *fluvio.Job[HelloArgs]) error {
+	w.lastJob.Store(job)
 	w.done <- job.ID
 	return nil
 }
@@ -92,6 +94,61 @@ func TestClientLifecycle(t *testing.T) {
 	job, err := client.GetJob(ctx, row.ID)
 	require.NoError(t, err)
 	require.Equal(t, fluvio.JobStateCompleted, job.State)
+}
+
+func TestWorkerVisibility(t *testing.T) {
+	_, client, hw := setupIntegration(t)
+	ctx := context.Background()
+
+	const workerID = "test-worker-1"
+	client, err := fluvio.NewClient(client.Driver(), &fluvio.Config{
+		WorkerID: workerID,
+		Queues: map[string]fluvio.QueueConfig{
+			fluvio.QueueDefault: {MaxWorkers: 5},
+		},
+		Workers:                 mustWorkers(t, hw),
+		WorkerHeartbeatInterval: 100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	require.NoError(t, client.Start(ctx))
+	t.Cleanup(func() { client.Stop() })
+
+	row, err := client.Enqueue(ctx, HelloArgs{Name: "world"})
+	require.NoError(t, err)
+
+	select {
+	case <-hw.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for job")
+	}
+
+	got := hw.lastJob.Load()
+	require.NotNil(t, got)
+	require.Equal(t, workerID, got.WorkerID)
+	require.Equal(t, 5, got.MaxWorkers)
+	require.Equal(t, []string{workerID}, got.AttemptedBy)
+	require.Equal(t, workerID, got.ClaimedBy())
+
+	job, err := client.GetJob(ctx, row.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{workerID}, job.AttemptedBy)
+
+	require.Eventually(t, func() bool {
+		workers, err := client.ListWorkers(ctx)
+		return err == nil && len(workers) == 1 && workers[0].ID == workerID
+	}, 5*time.Second, 100*time.Millisecond)
+
+	instances, capacity, err := client.QueueWorkerCapacity(ctx, fluvio.QueueDefault)
+	require.NoError(t, err)
+	require.Equal(t, 1, instances)
+	require.Equal(t, 5, capacity)
+}
+
+func mustWorkers(t *testing.T, hw *HelloWorker) *fluvio.Workers {
+	t.Helper()
+	w := fluvio.NewWorkers()
+	fluvio.AddWorker(w, hw)
+	return w
 }
 
 func TestTransactionalEnqueue(t *testing.T) {

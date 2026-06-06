@@ -90,6 +90,9 @@ type driverJobWrapper struct {
 	args        []byte
 	attempt     int16
 	maxAttempts int16
+	attemptedBy []string
+	workerID    string
+	maxWorkers  int
 }
 
 type typedWorker[T JobArgs] struct {
@@ -111,6 +114,9 @@ func (tw *typedWorker[T]) work(ctx context.Context, d *driverJobWrapper) error {
 		Args:        args,
 		Attempt:     d.attempt,
 		MaxAttempts: d.maxAttempts,
+		AttemptedBy: d.attemptedBy,
+		WorkerID:    d.workerID,
+		MaxWorkers:  d.maxWorkers,
 	}
 	return tw.worker.Work(ctx, job)
 }

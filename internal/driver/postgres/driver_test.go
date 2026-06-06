@@ -48,17 +48,17 @@ func TestMigrateUpDownStatus(t *testing.T) {
 
 	status, err := d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 3)
+	require.Len(t, status, 4)
 
 	require.NoError(t, d.MigrateDown(ctx, 1))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 2)
+	require.Len(t, status, 3)
 
 	require.NoError(t, d.Migrate(ctx))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 3)
+	require.Len(t, status, 4)
 }
 
 func TestEnqueueFetchAck(t *testing.T) {
@@ -255,4 +255,39 @@ func TestQueueStats(t *testing.T) {
 	stats, err := d.QueueStats(ctx, "default")
 	require.NoError(t, err)
 	require.Equal(t, int64(1), stats.Pending)
+}
+
+func TestWorkerRegistry(t *testing.T) {
+	_, d := setupPostgres(t)
+	ctx := context.Background()
+
+	require.NoError(t, d.UpsertWorker(ctx, "worker-a", map[string]int{"default": 10}))
+	require.NoError(t, d.UpsertWorker(ctx, "worker-b", map[string]int{"default": 5, "critical": 2}))
+
+	workers, err := d.ListWorkers(ctx, 90*time.Second)
+	require.NoError(t, err)
+	require.Len(t, workers, 2)
+
+	byID := map[string]*driver.WorkerInstance{}
+	for _, w := range workers {
+		byID[w.ID] = w
+	}
+	require.Equal(t, 10, byID["worker-a"].Queues["default"])
+	require.Equal(t, 5, byID["worker-b"].Queues["default"])
+	require.Equal(t, 2, byID["worker-b"].Queues["critical"])
+
+	require.NoError(t, d.RemoveWorker(ctx, "worker-a"))
+	workers, err = d.ListWorkers(ctx, 90*time.Second)
+	require.NoError(t, err)
+	require.Len(t, workers, 1)
+	require.Equal(t, "worker-b", workers[0].ID)
+
+	// Upsert again preserves started_at on conflict.
+	firstSeen := workers[0].StartedAt
+	require.NoError(t, d.UpsertWorker(ctx, "worker-b", map[string]int{"default": 8}))
+	workers, err = d.ListWorkers(ctx, 90*time.Second)
+	require.NoError(t, err)
+	require.Len(t, workers, 1)
+	require.Equal(t, firstSeen, workers[0].StartedAt)
+	require.Equal(t, 8, workers[0].Queues["default"])
 }

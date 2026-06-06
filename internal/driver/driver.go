@@ -59,6 +59,14 @@ type ListJobsParams struct {
 	Offset int
 }
 
+// WorkerInstance represents a live processing client registered in the fleet.
+type WorkerInstance struct {
+	ID        string
+	Queues    map[string]int // queue -> max_workers
+	StartedAt time.Time
+	LastSeen  time.Time
+}
+
 // Tx is an opaque transaction handle. Drivers cast it to their concrete type.
 type Tx interface{}
 
@@ -89,6 +97,10 @@ type Driver interface {
 	ReleaseLeader(ctx context.Context) error
 
 	StuckJobs(ctx context.Context, timeout time.Duration) ([]*Job, error)
+
+	UpsertWorker(ctx context.Context, workerID string, queues map[string]int) error
+	RemoveWorker(ctx context.Context, workerID string) error
+	ListWorkers(ctx context.Context, staleAfter time.Duration) ([]*WorkerInstance, error)
 
 	Migrate(ctx context.Context) error
 	MigrateDown(ctx context.Context, steps int) error

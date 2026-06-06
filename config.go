@@ -18,8 +18,10 @@ type Config struct {
 	PeriodicInterval time.Duration
 	Middleware       []JobMiddleware
 	Logger           *slog.Logger
-	ErrorHandler     func(ctx context.Context, job JobRow, err error)
-	WorkerID         string
+	ErrorHandler            func(ctx context.Context, job JobRow, err error)
+	WorkerID                string
+	WorkerHeartbeatInterval time.Duration
+	WorkerTTL               time.Duration
 }
 
 type QueueConfig struct {
@@ -42,15 +44,26 @@ func (c *Config) applyDefaults() {
 		c.Logger = slog.Default()
 	}
 	if c.WorkerID == "" {
-		hostname, _ := os.Hostname()
-		if hostname == "" {
-			hostname = "fluvio"
-		}
-		c.WorkerID = fmt.Sprintf("%s-%d", hostname, os.Getpid())
+		c.WorkerID = DefaultWorkerID()
 	}
 	if c.PeriodicInterval == 0 {
 		c.PeriodicInterval = 30 * time.Second
 	}
+	if c.WorkerHeartbeatInterval == 0 {
+		c.WorkerHeartbeatInterval = 30 * time.Second
+	}
+	if c.WorkerTTL == 0 {
+		c.WorkerTTL = 90 * time.Second
+	}
+}
+
+// DefaultWorkerID returns a unique identifier based on hostname and process ID.
+func DefaultWorkerID() string {
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "fluvio"
+	}
+	return fmt.Sprintf("%s-%d", hostname, os.Getpid())
 }
 
 // EnqueueOption configures a single enqueue operation.

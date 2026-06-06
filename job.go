@@ -82,10 +82,15 @@ type JobRow struct {
 	Priority    int16
 	Attempt     int16
 	MaxAttempts int16
+	AttemptedBy []string
 	ScheduledAt time.Time
+	AttemptedAt *time.Time
+	FinalizedAt *time.Time
 	CreatedAt   time.Time
 	ErrorTrace  json.RawMessage
 	Tags        []string
+	UniqueKey   *string
+	Metadata    json.RawMessage
 }
 
 func (j *Job[T]) Row() JobRow {
@@ -99,9 +104,14 @@ func (j *Job[T]) Row() JobRow {
 		Priority:    j.Priority,
 		Attempt:     j.Attempt,
 		MaxAttempts: j.MaxAttempts,
+		AttemptedBy: j.AttemptedBy,
 		ScheduledAt: j.ScheduledAt,
+		AttemptedAt: j.AttemptedAt,
+		FinalizedAt: j.FinalizedAt,
 		CreatedAt:   j.CreatedAt,
 		ErrorTrace:  j.ErrorTrace,
 		Tags:        j.Tags,
+		UniqueKey:   j.UniqueKey,
+		Metadata:    j.Metadata,
 	}
 }

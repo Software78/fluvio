@@ -7,13 +7,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/software78/fluvio/internal/driver"
 	"github.com/software78/fluvio/internal/executor"
 	"github.com/software78/fluvio/internal/leader"
 	"github.com/software78/fluvio/internal/maintenance"
 	"github.com/software78/fluvio/internal/scheduler"
 )
+
+type queueRunner struct {
+	loop *executor.FetchLoop
+	exec *executor.Executor
+}
+
+type pendingPeriodic struct {
+	cronExpr string
+	kind     string
+	data     []byte
+}
 
 // Client is the main Fluvio job queue client.
 type Client struct {
@@ -23,12 +33,13 @@ type Client struct {
 	running   bool
 	stopCh    chan struct{}
 
-	fetchLoops []*executor.FetchLoop
-	exec       *executor.Executor
-	elector    *leader.Elector
-	sched      *scheduler.Scheduler
-	periodic   *scheduler.Periodic
-	reaper     *maintenance.Reaper
+	queueRunners []*queueRunner
+	elector      *leader.Elector
+	sched        *scheduler.Scheduler
+	periodic     *scheduler.Periodic
+	reaper       *maintenance.Reaper
+
+	pendingPeriodic []pendingPeriodic
 
 	leaderMu       sync.Mutex
 	leaderServices bool
@@ -47,9 +58,8 @@ func NewClient(d driver.Driver, cfg *Config) (*Client, error) {
 		return nil, fmt.Errorf("%w: workers registry is required", ErrInvalidConfig)
 	}
 	return &Client{
-		driver:   d,
-		cfg:      *cfg,
-		periodic: scheduler.NewPeriodic(d, cfg.Logger, 30*time.Second),
+		driver: d,
+		cfg:    *cfg,
 	}, nil
 }
 
@@ -62,31 +72,36 @@ func (c *Client) Start(ctx context.Context) error {
 		return ErrClientRunning
 	}
 
-	totalWorkers := 0
-	queues := make([]string, 0, len(c.cfg.Queues))
+	c.queueRunners = nil
 	for name, qc := range c.cfg.Queues {
-		queues = append(queues, name)
-		totalWorkers += qc.MaxWorkers
-	}
-	if totalWorkers == 0 {
-		totalWorkers = 10
-	}
-
-	c.exec = executor.New(totalWorkers, c.cfg.Logger)
-	c.stopCh = make(chan struct{})
-
-	if len(queues) > 0 {
+		if qc.MaxWorkers <= 0 {
+			continue
+		}
+		exec := executor.New(qc.MaxWorkers, c.cfg.Logger)
 		loop := executor.NewFetchLoop(
 			c.driver,
-			queues,
+			[]string{name},
 			c.cfg.WorkerID,
 			c.cfg.FetchInterval,
-			c.exec,
+			exec,
 			c.handleJob,
 			c.cfg.Logger,
 		)
-		c.fetchLoops = append(c.fetchLoops, loop)
-		loop.Start()
+		c.queueRunners = append(c.queueRunners, &queueRunner{loop: loop, exec: exec})
+	}
+
+	c.stopCh = make(chan struct{})
+
+	c.periodic = scheduler.NewPeriodic(c.driver, c.cfg.Logger, c.cfg.PeriodicInterval)
+	for _, reg := range c.pendingPeriodic {
+		if err := c.periodic.Register(reg.cronExpr, reg.kind, reg.data); err != nil {
+			return err
+		}
+	}
+	c.pendingPeriodic = nil
+
+	for _, qr := range c.queueRunners {
+		qr.loop.Start()
 	}
 
 	c.sched = scheduler.New(c.driver, c.cfg.Logger, 5*time.Second)
@@ -108,11 +123,18 @@ func (c *Client) Start(ctx context.Context) error {
 	return nil
 }
 
+// Stop shuts down the client and waits for in-flight jobs to finish.
 func (c *Client) Stop() {
+	_ = c.StopContext(context.Background())
+}
+
+// StopContext shuts down the client. If ctx expires before in-flight jobs finish,
+// shutdown continues but returns ctx.Err().
+func (c *Client) StopContext(ctx context.Context) error {
 	c.mu.Lock()
 	if !c.running {
 		c.mu.Unlock()
-		return
+		return nil
 	}
 	c.running = false
 	c.mu.Unlock()
@@ -123,12 +145,17 @@ func (c *Client) Stop() {
 	if c.elector != nil {
 		c.elector.Stop()
 	}
-	for _, loop := range c.fetchLoops {
-		loop.Stop()
+	for _, qr := range c.queueRunners {
+		qr.loop.Stop()
 	}
-	if c.exec != nil {
-		c.exec.Stop()
+
+	var stopErr error
+	for _, qr := range c.queueRunners {
+		if err := qr.exec.StopContext(ctx); err != nil && stopErr == nil {
+			stopErr = err
+		}
 	}
+	return stopErr
 }
 
 func (c *Client) startLeaderServices() {
@@ -160,7 +187,15 @@ func (c *Client) AddPeriodicJob(cronExpr string, args JobArgs) error {
 	if err != nil {
 		return err
 	}
-	return c.periodic.Register(cronExpr, args.Kind(), data)
+	if c.periodic != nil {
+		return c.periodic.Register(cronExpr, args.Kind(), data)
+	}
+	c.pendingPeriodic = append(c.pendingPeriodic, pendingPeriodic{
+		cronExpr: cronExpr,
+		kind:     args.Kind(),
+		data:     data,
+	})
+	return nil
 }
 
 func (c *Client) Enqueue(ctx context.Context, args JobArgs, opts ...EnqueueOption) (*JobRow, error) {
@@ -187,7 +222,7 @@ func (c *Client) Enqueue(ctx context.Context, args JobArgs, opts ...EnqueueOptio
 	return &row, nil
 }
 
-func (c *Client) EnqueueTx(ctx context.Context, tx pgx.Tx, args JobArgs, opts ...EnqueueOption) (*JobRow, error) {
+func (c *Client) EnqueueTx(ctx context.Context, tx Tx, args JobArgs, opts ...EnqueueOption) (*JobRow, error) {
 	o := applyEnqueueOptions(opts)
 	data, err := json.Marshal(args)
 	if err != nil {
@@ -331,7 +366,13 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 		if c.cfg.ErrorHandler != nil {
 			c.cfg.ErrorHandler(ctx, row, err)
 		}
-		nextAt := time.Now().Add(w.nextAttempt(wrap, err, c.cfg.MaxRetryDelay))
+		delay, nextErr := w.nextAttempt(wrap, err, c.cfg.MaxRetryDelay)
+		if nextErr != nil {
+			c.cfg.Logger.Warn("failed to decode job args for retry delay; using default backoff",
+				"job_id", dJob.ID, "kind", dJob.Kind, "error", nextErr)
+			delay = DefaultRetryDelay(dJob.Attempt, c.cfg.MaxRetryDelay)
+		}
+		nextAt := time.Now().Add(delay)
 		return c.nackJob(ctx, dJob, err, nextAt)
 	}
 	return c.driver.Ack(ctx, dJob.ID)
@@ -351,9 +392,14 @@ func driverJobToRow(job *driver.Job) JobRow {
 		Priority:    job.Priority,
 		Attempt:     job.Attempt,
 		MaxAttempts: job.MaxAttempts,
+		AttemptedBy: job.AttemptedBy,
 		ScheduledAt: job.ScheduledAt,
+		AttemptedAt: job.AttemptedAt,
+		FinalizedAt: job.FinalizedAt,
 		CreatedAt:   job.CreatedAt,
 		ErrorTrace:  json.RawMessage(job.ErrorTrace),
 		Tags:        job.Tags,
+		UniqueKey:   job.UniqueKey,
+		Metadata:    json.RawMessage(job.Metadata),
 	}
 }

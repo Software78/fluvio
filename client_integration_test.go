@@ -105,7 +105,7 @@ func TestTransactionalEnqueue(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = client.GetJob(ctx, row.ID)
-	require.Error(t, err)
+	require.ErrorIs(t, err, fluvio.ErrJobNotFound)
 
 	require.NoError(t, tx.Commit(ctx))
 

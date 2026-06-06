@@ -8,20 +8,21 @@ import (
 
 // Config configures a Fluvio client.
 type Config struct {
-	Queues        map[string]QueueConfig
-	Workers       *Workers
-	FetchInterval time.Duration
-	JobTimeout    time.Duration
-	MaxRetryDelay time.Duration
-	Middleware    []JobMiddleware
-	Logger        *slog.Logger
-	ErrorHandler  func(ctx context.Context, job JobRow, err error)
-	WorkerID      string
-	UseLeaseTable bool
-	LeaderID      string
+	Queues           map[string]QueueConfig
+	Workers          *Workers
+	FetchInterval    time.Duration
+	JobTimeout       time.Duration
+	MaxRetryDelay    time.Duration
+	PeriodicInterval time.Duration
+	Middleware       []JobMiddleware
+	Logger           *slog.Logger
+	ErrorHandler     func(ctx context.Context, job JobRow, err error)
+	WorkerID         string
 }
 
 type QueueConfig struct {
+	// MaxWorkers is the maximum number of concurrent jobs for this queue.
+	// Set to 0 to disable processing while still allowing enqueue.
 	MaxWorkers int
 }
 
@@ -41,8 +42,8 @@ func (c *Config) applyDefaults() {
 	if c.WorkerID == "" {
 		c.WorkerID = "fluvio-worker"
 	}
-	if c.LeaderID == "" {
-		c.LeaderID = c.WorkerID
+	if c.PeriodicInterval == 0 {
+		c.PeriodicInterval = 30 * time.Second
 	}
 }
 

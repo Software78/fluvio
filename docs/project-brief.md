@@ -62,8 +62,10 @@ A production-grade background job queue for Go applications backed by PostgreSQL
 fluvio/
 ├── go.mod                          module github.com/you/fluvio
 ├── go.sum
+├── docs/
+│   └── project-brief.md            Design notes and implementation plan
 │
-├── client.go                       Client[TTx], NewClient, Start, Stop
+├── client.go                       Client, NewClient, Start, Stop
 ├── worker.go                       Worker[T] interface, WorkerDefaults[T]
 ├── job.go                          Job[T], JobArgs interface, JobState
 ├── config.go                       Config, QueueConfig, RetryPolicy
@@ -553,21 +555,33 @@ func (d *PostgresDriver) EnqueueMany(ctx context.Context, params []EnqueueParams
 // Lock ID is a stable int64 derived from fnv.New64a("fluvio:leader").
 const leaderLockID int64 = 0x666c7576696f // "fluvio" in hex, for example
 
-func (d *PostgresDriver) TryAcquireLeader(ctx context.Context) (bool, error) {
+func (d *Driver) TryAcquireLeader(ctx context.Context) (bool, error) {
+    if d.leaderConn == nil {
+        conn, err := d.pool.Acquire(ctx)
+        if err != nil {
+            return false, err
+        }
+        d.leaderConn = conn
+    }
     var acquired bool
-    err := d.pool.QueryRow(ctx,
+    err := d.leaderConn.QueryRow(ctx,
         "SELECT pg_try_advisory_lock($1)", leaderLockID,
     ).Scan(&acquired)
     return acquired, err
 }
 
-func (d *PostgresDriver) ReleaseLeader(ctx context.Context) error {
-    _, err := d.pool.Exec(ctx, "SELECT pg_advisory_unlock($1)", leaderLockID)
+func (d *Driver) ReleaseLeader(ctx context.Context) error {
+    if d.leaderConn == nil {
+        return nil
+    }
+    _, err := d.leaderConn.Exec(ctx, "SELECT pg_advisory_unlock($1)", leaderLockID)
+    d.leaderConn.Release()
+    d.leaderConn = nil
     return err
 }
 ```
 
-**Important**: advisory locks are session-scoped. You must hold a single dedicated `*pgx.Conn` (not a pool conn) for the leader lock's lifetime. The pool can reclaim connections, breaking the lock silently.
+**Important**: advisory locks are session-scoped. The driver holds a dedicated `*pgxpool.Conn` (via `pool.Acquire`) for the leader lock's lifetime — not a transient pool query. `ReleaseLeader` is called on elector shutdown regardless of whether leadership was acquired, so the dedicated connection is always returned to the pool.
 
 ### 5.4 Transaction adapter
 

@@ -13,8 +13,8 @@ import (
 )
 
 type Config struct {
-	UseLeaseTable bool
-	LeaderID      string
+	UseLeaseTable bool // Use lease table instead of session advisory lock (PgBouncer-compatible).
+	LeaderID      string // Instance identifier for lease-table leader election.
 }
 
 // Driver implements driver.Driver for PostgreSQL.

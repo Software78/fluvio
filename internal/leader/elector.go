@@ -45,9 +45,7 @@ func (e *Elector) Start() {
 func (e *Elector) Stop() {
 	close(e.stopCh)
 	<-e.doneCh
-	if e.isLeader {
-		_ = e.driver.ReleaseLeader(context.Background())
-	}
+	_ = e.driver.ReleaseLeader(context.Background())
 }
 
 func (e *Elector) run() {

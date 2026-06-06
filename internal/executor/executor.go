@@ -57,8 +57,24 @@ func (e *Executor) Dispatch(ctx context.Context, job *driver.Job, handler JobHan
 }
 
 func (e *Executor) Stop() {
+	_ = e.StopContext(context.Background())
+}
+
+func (e *Executor) StopContext(ctx context.Context) error {
 	e.mu.Lock()
 	e.closed = true
 	e.mu.Unlock()
-	e.wg.Wait()
+
+	done := make(chan struct{})
+	go func() {
+		e.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

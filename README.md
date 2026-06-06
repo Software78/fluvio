@@ -127,14 +127,26 @@ make build   # outputs bin/fluvio
 
 ## Configuration
 
+### Client (`fluvio.Config`)
+
 | Field | Default | Description |
 |-------|---------|-------------|
 | `FetchInterval` | 500ms | Poll interval for new jobs |
 | `JobTimeout` | 30m | Max running time before reaper nacks |
 | `MaxRetryDelay` | 24h | Cap on exponential backoff |
+| `PeriodicInterval` | 30s | Tick interval for in-memory cron jobs |
 | `WorkerID` | `fluvio-worker` | Identifier stored in `attempted_by` |
 
-Per-queue `MaxWorkers` controls concurrency. Leader election (Postgres advisory lock) runs scheduled sweeps, in-memory periodic jobs, and the stuck-job reaper on one instance.
+Per-queue `MaxWorkers` controls concurrency — each queue gets its own fetch loop capped at that limit. Set `MaxWorkers` to 0 to disable processing for a queue. Omit queues entirely for insert-only clients.
+
+Leader election (Postgres advisory lock) runs scheduled sweeps, in-memory periodic jobs, and the stuck-job reaper on one instance.
+
+### Postgres driver (`postgres.Config`)
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `UseLeaseTable` | false | Use lease table instead of advisory lock (PgBouncer-compatible) |
+| `LeaderID` | `fluvio` | Instance identifier for lease-table leader election |
 
 ## Development
 

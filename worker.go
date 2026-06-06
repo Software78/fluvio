@@ -17,6 +17,9 @@ type WorkerDefaults[T JobArgs] struct{}
 
 func (WorkerDefaults[T]) Timeout() time.Duration { return 0 }
 
+// NextAttempt returns the delay before the next retry attempt.
+// Attempt is the number of attempts made including the current one
+// (incremented by Fetch before the worker runs).
 func (WorkerDefaults[T]) NextAttempt(job *Job[T], _ error) time.Duration {
 	base := time.Duration(math.Pow(4, float64(job.Attempt))) * time.Second
 	if base > 24*time.Hour {
@@ -55,6 +58,18 @@ func workerNextAttempt[T JobArgs](w Worker[T], job *Job[T], err error, maxDelay 
 	return d
 }
 
+// DefaultRetryDelay returns the built-in exponential backoff for a given attempt count.
+func DefaultRetryDelay(attempt int16, maxDelay time.Duration) time.Duration {
+	base := time.Duration(math.Pow(4, float64(attempt))) * time.Second
+	if base > 24*time.Hour {
+		base = 24 * time.Hour
+	}
+	if base > maxDelay {
+		return maxDelay
+	}
+	return base
+}
+
 type Workers struct {
 	byKind map[string]anyWorker
 }
@@ -63,7 +78,7 @@ type anyWorker interface {
 	kind() string
 	work(ctx context.Context, dJob *driverJobWrapper) error
 	timeout(defaultTimeout time.Duration) time.Duration
-	nextAttempt(dJob *driverJobWrapper, err error, maxDelay time.Duration) time.Duration
+	nextAttempt(dJob *driverJobWrapper, err error, maxDelay time.Duration) (time.Duration, error)
 }
 
 type driverJobWrapper struct {
@@ -102,16 +117,18 @@ func (tw *typedWorker[T]) timeout(defaultTimeout time.Duration) time.Duration {
 	return workerTimeout(tw.worker, defaultTimeout)
 }
 
-func (tw *typedWorker[T]) nextAttempt(d *driverJobWrapper, err error, maxDelay time.Duration) time.Duration {
+func (tw *typedWorker[T]) nextAttempt(d *driverJobWrapper, err error, maxDelay time.Duration) (time.Duration, error) {
 	var args T
-	_ = json.Unmarshal(d.args, &args)
+	if err := json.Unmarshal(d.args, &args); err != nil {
+		return 0, err
+	}
 	job := &Job[T]{
 		ID:          d.id,
 		Attempt:     d.attempt,
 		MaxAttempts: d.maxAttempts,
 		Args:        args,
 	}
-	return workerNextAttempt(tw.worker, job, err, maxDelay)
+	return workerNextAttempt(tw.worker, job, err, maxDelay), nil
 }
 
 func NewWorkers() *Workers {

@@ -48,17 +48,17 @@ func TestMigrateUpDownStatus(t *testing.T) {
 
 	status, err := d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 2)
+	require.Len(t, status, 3)
 
 	require.NoError(t, d.MigrateDown(ctx, 1))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 1)
+	require.Len(t, status, 2)
 
 	require.NoError(t, d.Migrate(ctx))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 2)
+	require.Len(t, status, 3)
 }
 
 func TestEnqueueFetchAck(t *testing.T) {

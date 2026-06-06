@@ -8,11 +8,12 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/software78/fluvio"
 )
+
+var pageTemplate = template.Must(template.New("page").Parse(layoutHTML))
 
 // Inspector is the subset of Client methods used by the UI.
 type Inspector interface {
@@ -145,7 +146,7 @@ func (s *server) renderPage(w http.ResponseWriter, data pageData) {
 	default:
 		content = dashboardContent
 	}
-	tpl := template.Must(template.New("page").Parse(layoutHTML))
+	tpl := pageTemplate
 	var buf bytes.Buffer
 	if err := tpl.Execute(&buf, struct {
 		pageData
@@ -223,17 +224,14 @@ func (s *server) apiEvents(w http.ResponseWriter, r *http.Request) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	var mu sync.Mutex
 	writeEvent := func() {
 		stats, err := s.inspector.ListQueues(ctx)
 		if err != nil {
 			return
 		}
 		data, _ := json.Marshal(stats)
-		mu.Lock()
 		fmt.Fprintf(w, "event: stats\ndata: %s\n\n", data)
 		flusher.Flush()
-		mu.Unlock()
 	}
 
 	writeEvent()

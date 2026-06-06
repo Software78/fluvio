@@ -95,6 +95,57 @@ func TestExecutorRespectsMaxWorkers(t *testing.T) {
 	exec.Stop()
 }
 
+func TestExecutorStopWhileWaitingForSlot(t *testing.T) {
+	exec := executor.New(1, slog.Default())
+	block := make(chan struct{})
+	started := make(chan struct{})
+
+	handler := func(ctx context.Context, job *driver.Job) error {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-block
+		return nil
+	}
+
+	exec.Dispatch(context.Background(), &driver.Job{ID: 1}, handler)
+	<-started
+
+	for i := 0; i < 5; i++ {
+		exec.Dispatch(context.Background(), &driver.Job{ID: int64(i + 2)}, handler)
+	}
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(block)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, exec.StopContext(ctx))
+}
+
+func TestExecutorStopContextTimeout(t *testing.T) {
+	exec := executor.New(1, slog.Default())
+	block := make(chan struct{})
+
+	exec.Dispatch(context.Background(), &driver.Job{ID: 1}, func(ctx context.Context, job *driver.Job) error {
+		<-block
+		return nil
+	})
+	time.Sleep(30 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := exec.StopContext(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	close(block)
+	_ = exec.StopContext(context.Background())
+}
+
 func TestFetchLoopBackoff(t *testing.T) {
 	fd := &fakeDriver{}
 	exec := executor.New(5, slog.Default())

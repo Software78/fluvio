@@ -50,7 +50,7 @@ func (s *Scheduler) run() {
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			n, err := s.driver.TickScheduled(context.Background(), time.Now())
+			n, err := s.driver.TickScheduled(context.Background(), time.Now().UTC())
 			if err != nil {
 				s.logger.Error("tick scheduled failed", "error", err)
 			} else if n > 0 {
@@ -61,9 +61,10 @@ func (s *Scheduler) run() {
 }
 
 type PeriodicJob struct {
-	Cron string
-	Kind string
-	Args []byte
+	Cron     string
+	Kind     string
+	Args     []byte
+	schedule cron.Schedule
 }
 
 type Periodic struct {
@@ -92,12 +93,13 @@ func NewPeriodic(d driver.Driver, logger *slog.Logger, interval time.Duration) *
 }
 
 func (p *Periodic) Register(cronExpr, kind string, args []byte) error {
-	if _, err := p.parser.Parse(cronExpr); err != nil {
+	schedule, err := p.parser.Parse(cronExpr)
+	if err != nil {
 		return err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.jobs = append(p.jobs, PeriodicJob{Cron: cronExpr, Kind: kind, Args: args})
+	p.jobs = append(p.jobs, PeriodicJob{Cron: cronExpr, Kind: kind, Args: args, schedule: schedule})
 	return nil
 }
 
@@ -127,22 +129,22 @@ func (p *Periodic) run() {
 	}
 }
 
+func periodicJobKey(kind, cronExpr string) string {
+	return kind + "\x00" + cronExpr
+}
+
 func (p *Periodic) tick(now time.Time, lastRun map[string]time.Time) {
 	p.mu.RLock()
 	jobs := append([]PeriodicJob(nil), p.jobs...)
 	p.mu.RUnlock()
 
 	for _, job := range jobs {
-		schedule, err := p.parser.Parse(job.Cron)
-		if err != nil {
-			continue
-		}
-		key := job.Kind + ":" + job.Cron
+		key := periodicJobKey(job.Kind, job.Cron)
 		prev, ok := lastRun[key]
 		if !ok {
 			prev = now.Add(-time.Minute)
 		}
-		next := schedule.Next(prev)
+		next := job.schedule.Next(prev)
 		if !next.After(now) {
 			_, err := p.driver.Enqueue(context.Background(), driver.EnqueueParams{
 				Kind: job.Kind,

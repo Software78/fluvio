@@ -10,4 +10,5 @@ var (
 	ErrClientStopped   = errors.New("fluvio: client is stopped")
 	ErrClientRunning   = errors.New("fluvio: client is already running")
 	ErrInvalidConfig   = errors.New("fluvio: invalid config")
+	ErrInvalidJobState = errors.New("fluvio: invalid job state")
 )

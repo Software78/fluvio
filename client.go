@@ -246,6 +246,9 @@ func (c *Client) EnqueueTx(ctx context.Context, tx Tx, args JobArgs, opts ...Enq
 	return &row, nil
 }
 
+// EnqueueMany inserts multiple jobs in a single transaction. All jobs commit
+// together or none do; the first error (including ErrUniqueConflict) rolls back
+// the entire batch.
 func (c *Client) EnqueueMany(ctx context.Context, argsList []JobArgs, opts ...EnqueueOption) ([]JobRow, error) {
 	if len(argsList) == 0 {
 		return nil, nil
@@ -290,6 +293,9 @@ func (c *Client) GetJob(ctx context.Context, id int64) (*JobRow, error) {
 }
 
 func (c *Client) ListJobs(ctx context.Context, queue, state, kind string, limit, offset int) ([]JobRow, error) {
+	if !ValidJobState(state) {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidJobState, state)
+	}
 	jobs, err := c.driver.ListJobs(ctx, driver.ListJobsParams{
 		Queue: queue, State: state, Kind: kind, Limit: limit, Offset: offset,
 	})
@@ -323,6 +329,9 @@ func (c *Client) Migrate(ctx context.Context) error {
 	return c.driver.Migrate(ctx)
 }
 
+// handleJob runs a fetched job. ctx comes from the fetch loop (context.Background);
+// it is not cancelled on client shutdown — StopContext waits on the executor
+// WaitGroup instead. Per-job timeouts use context.WithTimeout derived from ctx.
 func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 	w, ok := c.cfg.Workers.get(dJob.Kind)
 	if !ok {

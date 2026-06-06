@@ -99,6 +99,7 @@ func (f *FetchLoop) tick() (stop bool) {
 		sleep := f.backoff
 		f.mu.Unlock()
 
+		// Stop() blocks until this sleep finishes or stopCh fires; max wait is maxBackoff.
 		select {
 		case <-f.stopCh:
 			return true

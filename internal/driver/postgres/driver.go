@@ -14,6 +14,8 @@ import (
 	"github.com/software78/fluvio/internal/driver"
 )
 
+var errLeaderLost = errors.New("fluvio/postgres: leader lease lost")
+
 const leaderLockID int64 = 0x666c7576696f
 
 const jobColumns = `id, queue, kind, args, state, priority, attempt, max_attempts,
@@ -74,10 +76,25 @@ func normalizeEnqueueParams(p driver.EnqueueParams) driver.EnqueueParams {
 }
 
 func initialState(p driver.EnqueueParams) string {
-	if p.ScheduledAt != nil && p.ScheduledAt.After(time.Now()) {
+	if p.ScheduledAt != nil && p.ScheduledAt.After(time.Now().UTC()) {
 		return "scheduled"
 	}
 	return "pending"
+}
+
+var validJobStates = map[string]struct{}{
+	"pending": {}, "running": {}, "completed": {}, "failed": {},
+	"dead": {}, "scheduled": {}, "cancelled": {},
+}
+
+func validateJobState(state string) error {
+	if state == "" {
+		return nil
+	}
+	if _, ok := validJobStates[state]; !ok {
+		return fmt.Errorf("%w: %q", fluvio.ErrInvalidJobState, state)
+	}
+	return nil
 }
 
 func (d *Driver) Enqueue(ctx context.Context, p driver.EnqueueParams) (*driver.Job, error) {
@@ -94,7 +111,7 @@ func (d *Driver) EnqueueTx(ctx context.Context, tx driver.Tx, p driver.EnqueuePa
 
 func (d *Driver) enqueueWithQuerier(ctx context.Context, q pgxQuerier, p driver.EnqueueParams) (*driver.Job, error) {
 	state := initialState(p)
-	scheduledAt := time.Now()
+	scheduledAt := time.Now().UTC()
 	if p.ScheduledAt != nil {
 		scheduledAt = *p.ScheduledAt
 	}
@@ -223,14 +240,15 @@ func (d *Driver) Nack(ctx context.Context, jobID int64, jobErr error, nextAttemp
 	})
 	newTrace, _ := json.Marshal(trace)
 
+	var tag pgconn.CommandTag
 	if attempt >= maxAttempts {
-		_, err = tx.Exec(ctx, `
+		tag, err = tx.Exec(ctx, `
 			UPDATE fluvio_jobs
 			SET state = 'dead', finalized_at = now(), error_trace = $2
 			WHERE id = $1
 		`, jobID, newTrace)
 	} else {
-		_, err = tx.Exec(ctx, `
+		tag, err = tx.Exec(ctx, `
 			UPDATE fluvio_jobs
 			SET state = 'scheduled', scheduled_at = $2, error_trace = $3
 			WHERE id = $1
@@ -238,6 +256,9 @@ func (d *Driver) Nack(ctx context.Context, jobID int64, jobErr error, nextAttemp
 	}
 	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fluvio.ErrJobNotFound
 	}
 	return tx.Commit(ctx)
 }
@@ -270,6 +291,9 @@ func (d *Driver) GetJob(ctx context.Context, jobID int64) (*driver.Job, error) {
 }
 
 func (d *Driver) ListJobs(ctx context.Context, p driver.ListJobsParams) ([]*driver.Job, error) {
+	if err := validateJobState(p.State); err != nil {
+		return nil, err
+	}
 	limit := p.Limit
 	if limit <= 0 {
 		limit = 50
@@ -422,6 +446,9 @@ func (d *Driver) ListQueues(ctx context.Context) ([]*driver.QueueStats, error) {
 }
 
 func (d *Driver) TryAcquireLeader(ctx context.Context) (bool, error) {
+	d.leaderMu.Lock()
+	defer d.leaderMu.Unlock()
+
 	if d.useLease {
 		return d.tryAcquireLease(ctx)
 	}
@@ -441,15 +468,24 @@ func (d *Driver) RenewLeader(ctx context.Context) error {
 	if !d.useLease {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, `
+	tag, err := d.pool.Exec(ctx, `
 		UPDATE fluvio_leader
 		SET expires_at = now() + interval '60 seconds'
 		WHERE id = 'singleton' AND elected_by = $1
 	`, d.leaderID)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errLeaderLost
+	}
+	return nil
 }
 
 func (d *Driver) ReleaseLeader(ctx context.Context) error {
+	d.leaderMu.Lock()
+	defer d.leaderMu.Unlock()
+
 	if d.useLease {
 		_, err := d.pool.Exec(ctx, `DELETE FROM fluvio_leader WHERE elected_by = $1`, d.leaderID)
 		return err
@@ -495,11 +531,12 @@ func (d *Driver) tryAcquireLease(ctx context.Context) (bool, error) {
 }
 
 func (d *Driver) StuckJobs(ctx context.Context, timeout time.Duration) ([]*driver.Job, error) {
+	interval := fmt.Sprintf("%d seconds", int64(timeout.Seconds()))
 	rows, err := d.pool.Query(ctx, `
 		SELECT `+jobColumns+`
 		FROM fluvio_jobs
 		WHERE state = 'running' AND attempted_at < now() - $1::interval
-	`, timeout.String())
+	`, interval)
 	if err != nil {
 		return nil, err
 	}

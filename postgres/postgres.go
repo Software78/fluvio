@@ -1,4 +1,6 @@
 // Package postgres provides the PostgreSQL driver for Fluvio.
+// It wraps the internal implementation so callers can construct a driver
+// from an existing pgxpool.Pool without importing internal packages.
 package postgres
 
 import (

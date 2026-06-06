@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"sync"
 	"time"
 )
 
@@ -71,6 +72,7 @@ func DefaultRetryDelay(attempt int16, maxDelay time.Duration) time.Duration {
 }
 
 type Workers struct {
+	mu     sync.RWMutex
 	byKind map[string]anyWorker
 }
 
@@ -135,18 +137,26 @@ func NewWorkers() *Workers {
 	return &Workers{byKind: make(map[string]anyWorker)}
 }
 
+// AddWorker registers a worker for a job kind. Call before NewClient/Start;
+// concurrent AddWorker after Start is not supported.
 func AddWorker[T JobArgs](w *Workers, worker Worker[T]) {
 	var zero T
 	kind := zero.Kind()
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.byKind[kind] = &typedWorker[T]{kindName: kind, worker: worker}
 }
 
 func (w *Workers) get(kind string) (anyWorker, bool) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	aw, ok := w.byKind[kind]
 	return aw, ok
 }
 
 func (w *Workers) kinds() []string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	kinds := make([]string, 0, len(w.byKind))
 	for k := range w.byKind {
 		kinds = append(kinds, k)

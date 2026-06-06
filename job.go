@@ -49,6 +49,20 @@ type Job[T JobArgs] struct {
 	driverJob     *driver.Job
 }
 
+// ValidJobState reports whether s is a known job state filter value.
+func ValidJobState(s string) bool {
+	if s == "" {
+		return true
+	}
+	switch JobState(s) {
+	case JobStatePending, JobStateRunning, JobStateCompleted, JobStateFailed,
+		JobStateDead, JobStateScheduled, JobStateCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
 func jobFromDriver[T JobArgs](d *driver.Job, args T) *Job[T] {
 	return &Job[T]{
 		ID:          d.ID,

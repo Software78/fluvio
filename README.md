@@ -99,6 +99,10 @@ _, err = client.EnqueueTx(ctx, tx, SendEmailArgs{To: "user@example.com"})
 tx.Commit(ctx) // job visible only after commit
 ```
 
+### Bulk enqueue
+
+`EnqueueMany` runs all inserts in one transaction. If any row fails (including a unique-key conflict), the entire batch is rolled back and no jobs are inserted.
+
 ### 4. Web UI
 
 ```go
@@ -135,7 +139,7 @@ make build   # outputs bin/fluvio
 | `JobTimeout` | 30m | Max running time before reaper nacks |
 | `MaxRetryDelay` | 24h | Cap on exponential backoff |
 | `PeriodicInterval` | 30s | Tick interval for in-memory cron jobs |
-| `WorkerID` | `fluvio-worker` | Identifier stored in `attempted_by` |
+| `WorkerID` | `{hostname}-{pid}` | Identifier stored in `attempted_by` |
 
 Per-queue `MaxWorkers` controls concurrency — each queue gets its own fetch loop capped at that limit. Set `MaxWorkers` to 0 to disable processing for a queue. Omit queues entirely for insert-only clients.
 
@@ -146,7 +150,7 @@ Leader election (Postgres advisory lock) runs scheduled sweeps, in-memory period
 | Field | Default | Description |
 |-------|---------|-------------|
 | `UseLeaseTable` | false | Use lease table instead of advisory lock (PgBouncer-compatible) |
-| `LeaderID` | `fluvio` | Instance identifier for lease-table leader election |
+| `LeaderID` | `{hostname}-{pid}` | Instance identifier for lease-table leader election |
 
 ## Development
 

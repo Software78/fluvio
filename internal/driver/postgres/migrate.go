@@ -3,9 +3,11 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,10 +19,14 @@ type Config struct {
 	LeaderID      string // Instance identifier for lease-table leader election.
 }
 
+const migrationLockID int64 = 0x666c7576696f6d // "fluviom"
+
 // Driver implements driver.Driver for PostgreSQL.
+// TryAcquireLeader, RenewLeader, and ReleaseLeader must not be called concurrently.
 type Driver struct {
 	pool        *pgxpool.Pool
 	leaderConn  *pgxpool.Conn
+	leaderMu    sync.Mutex
 	useLease    bool
 	leaderID    string
 	leaseExpiry time.Time
@@ -29,7 +35,11 @@ type Driver struct {
 // New creates a Postgres driver from a connection pool.
 func New(pool *pgxpool.Pool, cfg Config) *Driver {
 	if cfg.LeaderID == "" {
-		cfg.LeaderID = "fluvio"
+		hostname, _ := os.Hostname()
+		if hostname == "" {
+			hostname = "fluvio"
+		}
+		cfg.LeaderID = fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	}
 	return &Driver{
 		pool:     pool,
@@ -43,6 +53,8 @@ func (d *Driver) Pool() *pgxpool.Pool {
 }
 
 func (d *Driver) Close() error {
+	d.leaderMu.Lock()
+	defer d.leaderMu.Unlock()
 	if d.leaderConn != nil {
 		d.leaderConn.Release()
 		d.leaderConn = nil
@@ -52,6 +64,17 @@ func (d *Driver) Close() error {
 }
 
 func (d *Driver) Migrate(ctx context.Context) error {
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockID); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() { _, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockID) }()
+
 	applied, err := d.appliedMigrations(ctx)
 	if err != nil {
 		return err
@@ -96,6 +119,17 @@ func (d *Driver) MigrateDown(ctx context.Context, steps int) error {
 	if steps <= 0 {
 		return nil
 	}
+
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockID); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() { _, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockID) }()
 
 	appliedList, err := d.MigrationStatus(ctx)
 	if err != nil {

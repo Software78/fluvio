@@ -11,12 +11,14 @@ import (
 type JobHandler func(ctx context.Context, job *driver.Job) error
 
 type Executor struct {
-	sem     chan struct{}
-	max     int
-	logger  *slog.Logger
-	wg      sync.WaitGroup
-	mu      sync.Mutex
-	closed  bool
+	sem      chan struct{}
+	max      int
+	logger   *slog.Logger
+	wg       sync.WaitGroup
+	mu       sync.Mutex
+	closed   bool
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 func New(maxWorkers int, logger *slog.Logger) *Executor {
@@ -27,6 +29,7 @@ func New(maxWorkers int, logger *slog.Logger) *Executor {
 		sem:    make(chan struct{}, maxWorkers),
 		max:    maxWorkers,
 		logger: logger,
+		stopCh: make(chan struct{}),
 	}
 }
 
@@ -42,16 +45,26 @@ func (e *Executor) Dispatch(ctx context.Context, job *driver.Job, handler JobHan
 		e.mu.Unlock()
 		return
 	}
-	e.wg.Add(1)
 	e.mu.Unlock()
 
 	go func() {
-		e.sem <- struct{}{}
-		defer func() {
-			<-e.sem
-			e.wg.Done()
-		}()
+		select {
+		case e.sem <- struct{}{}:
+		case <-e.stopCh:
+			return
+		}
 
+		defer func() { <-e.sem }()
+
+		e.mu.Lock()
+		if e.closed {
+			e.mu.Unlock()
+			return
+		}
+		e.wg.Add(1)
+		e.mu.Unlock()
+
+		defer e.wg.Done()
 		_ = handler(ctx, job)
 	}()
 }
@@ -64,6 +77,7 @@ func (e *Executor) StopContext(ctx context.Context) error {
 	e.mu.Lock()
 	e.closed = true
 	e.mu.Unlock()
+	e.stopOnce.Do(func() { close(e.stopCh) })
 
 	done := make(chan struct{})
 	go func() {

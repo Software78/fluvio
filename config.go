@@ -3,6 +3,8 @@ package fluvio
 import (
 	"context"
 	"log/slog"
+	"fmt"
+	"os"
 	"time"
 )
 
@@ -40,7 +42,11 @@ func (c *Config) applyDefaults() {
 		c.Logger = slog.Default()
 	}
 	if c.WorkerID == "" {
-		c.WorkerID = "fluvio-worker"
+		hostname, _ := os.Hostname()
+		if hostname == "" {
+			hostname = "fluvio"
+		}
+		c.WorkerID = fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	}
 	if c.PeriodicInterval == 0 {
 		c.PeriodicInterval = 30 * time.Second

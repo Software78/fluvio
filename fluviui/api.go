@@ -6,11 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/software78/fluvio"
 	"github.com/software78/fluvio/internal/driver"
+)
+
+const (
+	defaultJobsLimit = 50
+	maxJobsLimit     = 100
 )
 
 type apiClient interface {
@@ -31,6 +38,33 @@ type QueueStatsView struct {
 	Completed int64  `json:"completed"`
 	Failed    int64  `json:"failed"`
 	Paused    bool   `json:"paused"`
+}
+
+// JobsPage is a paginated jobs list response.
+type JobsPage struct {
+	Jobs    []fluvio.JobRow `json:"jobs"`
+	Limit   int             `json:"limit"`
+	Offset  int             `json:"offset"`
+	HasMore bool            `json:"has_more"`
+}
+
+func parseJobsPagination(q url.Values) (limit, offset int, err error) {
+	limit = defaultJobsLimit
+	offset = 0
+
+	if s := q.Get("limit"); s != "" {
+		limit, err = strconv.Atoi(s)
+		if err != nil || limit < 1 || limit > maxJobsLimit {
+			return 0, 0, fmt.Errorf("%w: limit must be between 1 and %d", fluvio.ErrInvalidConfig, maxJobsLimit)
+		}
+	}
+	if s := q.Get("offset"); s != "" {
+		offset, err = strconv.Atoi(s)
+		if err != nil || offset < 0 {
+			return 0, 0, fmt.Errorf("%w: offset must be >= 0", fluvio.ErrInvalidConfig)
+		}
+	}
+	return limit, offset, nil
 }
 
 func listQueuesView(ctx context.Context, client apiClient) ([]*QueueStatsView, error) {
@@ -62,17 +96,41 @@ func queuesHandler(client apiClient) http.Handler {
 
 func jobsHandler(client apiClient) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit, offset, err := parseJobsPagination(r.URL.Query())
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+
 		jobs, err := client.ListJobs(r.Context(),
 			r.URL.Query().Get("queue"),
 			r.URL.Query().Get("state"),
 			r.URL.Query().Get("kind"),
-			50, 0,
+			limit+1, offset,
 		)
 		if err != nil {
-			writeAPIError(w, http.StatusInternalServerError, err)
+			status := http.StatusInternalServerError
+			if errors.Is(err, fluvio.ErrInvalidJobState) {
+				status = http.StatusBadRequest
+			}
+			writeAPIError(w, status, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, jobs)
+
+		hasMore := len(jobs) > limit
+		if hasMore {
+			jobs = jobs[:limit]
+		}
+		if jobs == nil {
+			jobs = []fluvio.JobRow{}
+		}
+
+		writeJSON(w, http.StatusOK, JobsPage{
+			Jobs:    jobs,
+			Limit:   limit,
+			Offset:  offset,
+			HasMore: hasMore,
+		})
 	})
 }
 

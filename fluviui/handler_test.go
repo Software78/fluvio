@@ -24,6 +24,10 @@ func (mockClient) ListQueues(ctx context.Context) ([]*driver.QueueStats, error) 
 }
 
 func (mockClient) ListJobs(ctx context.Context, queue, state, kind string, limit, offset int) ([]fluvio.JobRow, error) {
+	_ = ctx
+	_ = queue
+	_ = state
+	_ = kind
 	return []fluvio.JobRow{{ID: 1, Queue: "default", Kind: "hello", State: fluvio.JobStatePending}}, nil
 }
 
@@ -51,6 +55,36 @@ func (errorClient) GetJob(ctx context.Context, id int64) (*fluvio.JobRow, error)
 func (errorClient) PauseQueue(ctx context.Context, queue string) error  { return nil }
 func (errorClient) ResumeQueue(ctx context.Context, queue string) error { return nil }
 
+type pagingClient struct {
+	lastLimit  int
+	lastOffset int
+}
+
+func (c *pagingClient) ListQueues(ctx context.Context) ([]*driver.QueueStats, error) {
+	return nil, nil
+}
+
+func (c *pagingClient) ListJobs(ctx context.Context, queue, state, kind string, limit, offset int) ([]fluvio.JobRow, error) {
+	_ = ctx
+	_ = queue
+	_ = state
+	_ = kind
+	c.lastLimit = limit
+	c.lastOffset = offset
+	jobs := make([]fluvio.JobRow, limit)
+	for i := range jobs {
+		jobs[i] = fluvio.JobRow{ID: int64(offset + i + 1)}
+	}
+	return jobs, nil
+}
+
+func (c *pagingClient) GetJob(ctx context.Context, id int64) (*fluvio.JobRow, error) {
+	return nil, fluvio.ErrJobNotFound
+}
+
+func (c *pagingClient) PauseQueue(ctx context.Context, queue string) error  { return nil }
+func (c *pagingClient) ResumeQueue(ctx context.Context, queue string) error { return nil }
+
 func TestHandlerAPIQueues(t *testing.T) {
 	h := handlerFor(mockClient{})
 	srv := httptest.NewServer(h)
@@ -65,6 +99,63 @@ func TestHandlerAPIQueues(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&stats))
 	require.Len(t, stats, 1)
 	require.Equal(t, int64(3), stats[0].Pending)
+}
+
+func TestHandlerAPIJobsPagination(t *testing.T) {
+	client := &pagingClient{}
+	h := handlerFor(client)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/fluvio/api/jobs?limit=2&offset=10")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, 3, client.lastLimit)
+	require.Equal(t, 10, client.lastOffset)
+
+	var page JobsPage
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&page))
+	require.Equal(t, 2, page.Limit)
+	require.Equal(t, 10, page.Offset)
+	require.True(t, page.HasMore)
+	require.Len(t, page.Jobs, 2)
+	require.Equal(t, int64(11), page.Jobs[0].ID)
+}
+
+func TestHandlerAPIJobsPaginationDefaults(t *testing.T) {
+	client := &pagingClient{}
+	h := handlerFor(client)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/fluvio/api/jobs")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, defaultJobsLimit+1, client.lastLimit)
+	require.Equal(t, 0, client.lastOffset)
+
+	var page JobsPage
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&page))
+	require.Equal(t, defaultJobsLimit, page.Limit)
+	require.Equal(t, 0, page.Offset)
+	require.True(t, page.HasMore)
+}
+
+func TestHandlerAPIJobsInvalidLimit(t *testing.T) {
+	h := handlerFor(mockClient{})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/fluvio/api/jobs?limit=0")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Equal(t, "invalid request", body["error"])
 }
 
 func TestHandlerAPIErrorSanitized(t *testing.T) {

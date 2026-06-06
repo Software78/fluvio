@@ -45,8 +45,8 @@ func (e *Executor) Dispatch(ctx context.Context, job *driver.Job, handler JobHan
 	e.wg.Add(1)
 	e.mu.Unlock()
 
-	e.sem <- struct{}{}
 	go func() {
+		e.sem <- struct{}{}
 		defer func() {
 			<-e.sem
 			e.wg.Done()

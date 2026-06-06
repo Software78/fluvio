@@ -16,10 +16,9 @@
 7. [Public Client API](#7-public-client-api)
 8. [Pro Features](#8-pro-features)
 9. [Migrations CLI](#9-migrations-cli)
-10. [Web UI](#10-web-ui)
-11. [Testing Strategy](#11-testing-strategy)
-12. [Build Order](#12-build-order)
-13. [Open Questions & Decisions](#13-open-questions--decisions)
+10. [Testing Strategy](#10-testing-strategy)
+11. [Build Order](#11-build-order)
+12. [Open Questions & Decisions](#12-open-questions--decisions)
 
 ---
 
@@ -37,7 +36,6 @@ A production-grade background job queue for Go applications backed by PostgreSQL
 | Multiple queues | ✅ | ✅ |
 | Unique jobs | ✅ | ✅ |
 | Periodic jobs (in-memory cron) | ✅ | ✅ |
-| Web UI (read-only inspect) | ✅ | ✅ |
 | Workflows (DAG) | ❌ | ✅ |
 | Sequences (ordered chains) | ❌ | ✅ |
 | Concurrency limits (partitioned) | ❌ | ✅ |
@@ -110,11 +108,6 @@ fluvio/
 │   │   └── encrypt.go              KeyProvider interface, AES-256-GCM impl
 │   └── ephemeral/
 │       └── ephemeral.go            auto-delete completed jobs
-│
-├── fluviui/
-│   ├── handler.go                  http.Handler, SSE endpoint for live stats
-│   ├── static/                     embedded React build
-│   └── api.go                      REST API for UI (jobs, queues, workflows)
 │
 ├── migrations/
 │   └── postgres/
@@ -253,7 +246,7 @@ CREATE TABLE fluvio_sequences (
 );
 ```
 
-The `sequence_id` + `sequence_pos` columns on `fluvio_jobs` are sufficient to drive execution; this table is metadata for UI and inspection.
+The `sequence_id` + `sequence_pos` columns on `fluvio_jobs` are sufficient to drive execution; this table is metadata for inspection APIs.
 
 ### 3.6 Dead letter queue (Pro)
 
@@ -965,32 +958,7 @@ driver.Migrate(ctx) // called once in your app's startup
 
 ---
 
-## 10. Web UI
-
-Embedded in the binary via `//go:embed static`. Mount as an `http.Handler`:
-
-```go
-import "github.com/you/fluvio/fluviui"
-
-mux.Handle("/fluvio/", fluviui.Handler(client))
-```
-
-### UI pages (v1 scope)
-
-- **Dashboard** — queue depth, throughput (jobs/min), error rate; auto-refreshes via SSE.
-- **Jobs** — list with filter by queue/state/kind; click to inspect args, error trace, retry history.
-- **Queues** — pause/resume; concurrency limit control (Pro).
-- **Workflows** — DAG visualisation, task status (Pro).
-- **Dead letter** — list, replay individual or bulk, purge (Pro).
-- **Periodic jobs** — list schedules, next/last run, pause (Pro).
-
-### SSE endpoint
-
-`GET /fluvio/api/events` streams queue stats every 5 seconds. No long-polling; plain SSE. UI subscribes on mount.
-
----
-
-## 11. Testing Strategy
+## 10. Testing Strategy
 
 ### Unit tests
 
@@ -1021,7 +989,7 @@ test-integration:
 
 ---
 
-## 12. Build Order
+## 11. Build Order
 
 Ship in this order. Each phase is independently useful and testable.
 
@@ -1043,15 +1011,14 @@ Ship in this order. Each phase is independently useful and testable.
 | **14 (Pro)** | Workflows (DAG engine) | 5 days |
 | **15 (Pro)** | Encrypted jobs + `KeyProvider` interface | 2 days |
 | **16 (Pro)** | Ephemeral jobs | 1 day |
-| **17** | Web UI (embed, SSE, dashboard + jobs pages) | 5 days |
-| **18** | CLI (`migrate up/down/status`) | 1 day |
+| **17** | CLI (`migrate up/down/status`) | 1 day |
 
 **OSS v1.0 gate**: phases 1–9 complete, all tests green, README with getting started guide.  
 **Pro v1.0 gate**: phases 10–16 complete.
 
 ---
 
-## 13. Open Questions & Decisions
+## 12. Open Questions & Decisions
 
 These should be resolved before or during phase 1.
 
@@ -1061,9 +1028,8 @@ These should be resolved before or during phase 1.
 | 2 | **pgx v4 vs v5** | v4 is more widely used; v5 is current | Ship v5; expose `riverdatabasesql`-style adapter for v4 users |
 | 3 | **Advisory lock vs lease table** | Advisory lock = simpler; lease table = PgBouncer-compatible | Default advisory lock, env flag for lease table fallback |
 | 4 | **`database/sql` support** | pgx only, or also `database/sql`? | pgx only in v1; `database/sql` driver in v1.1 (lets Bun/GORM users do transactional enqueue) |
-| 5 | **Job args encoding** | JSON (JSONB column) only, or also msgpack? | JSONB — inspectable in Postgres, works with UI, no perf concern at job scale |
+| 5 | **Job args encoding** | JSON (JSONB column) only, or also msgpack? | JSONB — inspectable in Postgres, no perf concern at job scale |
 | 6 | **LISTEN/NOTIFY** | Poll-only v1, or add pub/sub for instant pickup? | Poll-only v1; `LISTEN/NOTIFY` in v2 for sub-100ms job pickup latency |
 | 7 | **Pro licensing** | Source-available, private Go module, binary-only | Private Go module (same as River Pro); easiest to enforce, no WASM/binary hassle |
 | 8 | **Sequence waiting state** | New enum value vs metadata field | Metadata field — avoids migration on all envs when Pro is added; cast to `scheduled` with far-future `scheduled_at` is another option |
-| 9 | **Web UI framework** | React (heavier, River's approach), htmx (lighter), templ | htmx + templ for minimal JS; embed is smaller and no Node build step |
-| 10 | **Error trace format** | Array of objects vs flat string | JSONB array `[{attempt, error, at, worker}]` — queryable and UI-renderable |
+| 9 | **Error trace format** | Array of objects vs flat string | JSONB array `[{attempt, error, at, worker}]` — queryable and inspection-friendly |

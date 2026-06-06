@@ -86,7 +86,7 @@ func jobFromDriver[T JobArgs](d *driver.Job, args T) *Job[T] {
 	}
 }
 
-// JobRow is a non-generic view of a job for error handlers and UI.
+// JobRow is a non-generic view of a job for error handlers and inspection APIs.
 type JobRow struct {
 	ID          int64
 	Queue       string

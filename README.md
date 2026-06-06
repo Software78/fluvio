@@ -12,7 +12,6 @@ A production-grade background job queue for Go backed by PostgreSQL. Enqueue job
 | Unique jobs | Yes | Yes |
 | Scheduled jobs | Yes | Yes |
 | In-memory periodic (cron) | Yes | Yes |
-| Web UI (inspect) | Yes | Yes |
 | Workflows (DAG) | — | Pro |
 | Sequences | — | Pro |
 | Concurrency limits | — | Pro |
@@ -104,17 +103,6 @@ tx.Commit(ctx) // job visible only after commit
 `EnqueueMany` runs all inserts in one transaction. If any row fails (including a unique-key conflict), the entire batch is rolled back and no jobs are inserted.
 
 Use `UniqueJobExists` to check for an active job with a given unique key before enqueueing.
-
-### 4. Web UI
-
-```go
-import "github.com/software78/fluvio/fluviui"
-
-adapter := &fluviui.ClientAdapter{Client: client}
-http.Handle("/fluvio/", fluviui.Handler(adapter, "/fluvio/"))
-```
-
-Open `/fluvio/` for dashboard, job list, and queue management.
 
 ## CLI
 

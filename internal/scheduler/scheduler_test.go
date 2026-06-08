@@ -16,6 +16,7 @@ import (
 type fakeTx struct{}
 
 type recordingDriver struct {
+	driver.NoopDriver
 	mu           sync.Mutex
 	enqueued     []string
 	periodicJobs map[string]*driver.PeriodicJob
@@ -117,75 +118,6 @@ func (d *recordingDriver) UpdatePeriodicJobNextRunTx(_ context.Context, _ driver
 func (d *recordingDriver) BeginTx(context.Context) (driver.Tx, error)  { return fakeTx{}, nil }
 func (d *recordingDriver) CommitTx(context.Context, driver.Tx) error   { return nil }
 func (d *recordingDriver) RollbackTx(context.Context, driver.Tx) error { return nil }
-
-func (d *recordingDriver) ListPeriodicJobs(context.Context) ([]*driver.PeriodicJob, error) {
-	return nil, nil
-}
-func (d *recordingDriver) PausePeriodicJob(context.Context, string) error  { return nil }
-func (d *recordingDriver) ResumePeriodicJob(context.Context, string) error { return nil }
-
-func (d *recordingDriver) Ack(context.Context, int64) error                    { return nil }
-func (d *recordingDriver) Nack(context.Context, int64, error, time.Time) error { return nil }
-func (d *recordingDriver) EnqueueMany(context.Context, []driver.EnqueueParams) ([]*driver.Job, error) {
-	return nil, nil
-}
-func (d *recordingDriver) Fetch(context.Context, []string, string, int) ([]*driver.Job, error) {
-	return nil, nil
-}
-func (d *recordingDriver) Cancel(context.Context, int64) error                { return nil }
-func (d *recordingDriver) GetJob(context.Context, int64) (*driver.Job, error) { return nil, nil }
-func (d *recordingDriver) ListJobs(context.Context, driver.ListJobsParams) ([]*driver.Job, error) {
-	return nil, nil
-}
-func (d *recordingDriver) ListDead(context.Context, int, int) ([]*driver.Job, error) { return nil, nil }
-func (d *recordingDriver) ReplayDead(context.Context, int64) error                   { return nil }
-func (d *recordingDriver) PurgeDead(context.Context, time.Time) (int64, error)       { return 0, nil }
-func (d *recordingDriver) TickScheduled(context.Context, time.Time) (int64, error)   { return 0, nil }
-func (d *recordingDriver) UniqueJobExists(context.Context, string) (bool, error)     { return false, nil }
-func (d *recordingDriver) PauseQueue(context.Context, string) error                  { return nil }
-func (d *recordingDriver) ResumeQueue(context.Context, string) error                 { return nil }
-func (d *recordingDriver) IsQueuePaused(context.Context, string) (bool, error)       { return false, nil }
-func (d *recordingDriver) QueueStats(context.Context, string) (*driver.QueueStats, error) {
-	return nil, nil
-}
-func (d *recordingDriver) ListQueues(context.Context) ([]*driver.QueueStats, error) { return nil, nil }
-func (d *recordingDriver) TryAcquireLeader(context.Context) (bool, error)           { return false, nil }
-func (d *recordingDriver) VerifyLeader(context.Context) error                         { return nil }
-func (d *recordingDriver) ReleaseLeader(context.Context) error                      { return nil }
-func (d *recordingDriver) StuckJobs(context.Context, time.Duration) ([]*driver.Job, error) {
-	return nil, nil
-}
-func (d *recordingDriver) UpsertWorker(context.Context, string, map[string]int) error { return nil }
-func (d *recordingDriver) RemoveWorker(context.Context, string) error                 { return nil }
-func (d *recordingDriver) ListWorkers(context.Context, time.Duration) ([]*driver.WorkerInstance, error) {
-	return nil, nil
-}
-func (d *recordingDriver) Migrate(context.Context) error                     { return nil }
-func (d *recordingDriver) MigrateDown(context.Context, int) error            { return nil }
-func (d *recordingDriver) MigrationStatus(context.Context) ([]string, error) { return nil, nil }
-func (d *recordingDriver) SetConcurrencyLimit(context.Context, driver.ConcurrencyLimit) error {
-	return nil
-}
-func (d *recordingDriver) AcquireConcurrencySlot(context.Context, string, string) (bool, error) {
-	return true, nil
-}
-func (d *recordingDriver) AcquireConcurrencySlotForJob(context.Context, int64, string, string) (bool, error) {
-	return true, nil
-}
-func (d *recordingDriver) ReleaseConcurrencySlot(context.Context, string, string) error { return nil }
-func (d *recordingDriver) SetConcurrencySlotKey(context.Context, int64, string) error   { return nil }
-func (d *recordingDriver) CreateWorkflow(context.Context, *driver.WorkflowRecord) error { return nil }
-func (d *recordingDriver) CompleteWorkflowTask(context.Context, driver.Tx, string, string) error {
-	return nil
-}
-func (d *recordingDriver) FailWorkflowTask(context.Context, string, string) error { return nil }
-func (d *recordingDriver) GetWorkflow(context.Context, string) (*driver.WorkflowState, error) {
-	return nil, nil
-}
-func (d *recordingDriver) ListWorkflows(context.Context, int, int) ([]*driver.WorkflowState, error) {
-	return nil, nil
-}
-func (d *recordingDriver) Close() error { return nil }
 
 func TestPeriodicDistinctKindsWithColon(t *testing.T) {
 	rd := newRecordingDriver()

@@ -54,11 +54,6 @@ type Client struct {
 	wakeSub JobWakeSubscription
 }
 
-// concurrencyRegistrar is implemented by drivers that track in-memory concurrency limits.
-type concurrencyRegistrar interface {
-	RegisterConcurrencyLimit(kind string, maxConcurrent int, partitioned bool)
-}
-
 // ConcurrencyLimitConfig configures per-kind concurrency caps.
 type ConcurrencyLimitConfig struct {
 	Kind          string
@@ -543,9 +538,7 @@ func (c *Client) SetConcurrencyLimit(ctx context.Context, cfg ConcurrencyLimitCo
 	}
 	c.concurrencyMu.Unlock()
 
-	if reg, ok := c.driver.(concurrencyRegistrar); ok {
-		reg.RegisterConcurrencyLimit(cfg.Kind, cfg.MaxConcurrent, cfg.PartitionKeyFn != nil)
-	}
+	c.driver.RegisterConcurrencyLimit(cfg.Kind, cfg.MaxConcurrent, cfg.PartitionKeyFn != nil)
 	return nil
 }
 

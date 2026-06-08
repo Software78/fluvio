@@ -16,6 +16,7 @@ import (
 var errLeaderLost = errors.New("leader lost")
 
 type mockDriver struct {
+	driver.NoopDriver
 	mu          sync.Mutex
 	leader      bool
 	renewCalls  int
@@ -56,88 +57,6 @@ func (m *mockDriver) setRenewFailAt(n int) {
 	m.renewFailAt = n
 	m.renewCalls = 0
 }
-
-func (m *mockDriver) Enqueue(context.Context, driver.EnqueueParams) (*driver.Job, error) {
-	return nil, nil
-}
-func (m *mockDriver) EnqueueTx(context.Context, driver.Tx, driver.EnqueueParams) (*driver.Job, error) {
-	return nil, nil
-}
-func (m *mockDriver) EnqueueMany(context.Context, []driver.EnqueueParams) ([]*driver.Job, error) {
-	return nil, nil
-}
-func (m *mockDriver) Fetch(context.Context, []string, string, int) ([]*driver.Job, error) {
-	return nil, nil
-}
-func (m *mockDriver) Ack(context.Context, int64) error                    { return nil }
-func (m *mockDriver) Nack(context.Context, int64, error, time.Time) error { return nil }
-func (m *mockDriver) Cancel(context.Context, int64) error                 { return nil }
-func (m *mockDriver) GetJob(context.Context, int64) (*driver.Job, error)  { return nil, nil }
-func (m *mockDriver) ListJobs(context.Context, driver.ListJobsParams) ([]*driver.Job, error) {
-	return nil, nil
-}
-func (m *mockDriver) ListDead(context.Context, int, int) ([]*driver.Job, error) { return nil, nil }
-func (m *mockDriver) ReplayDead(context.Context, int64) error                   { return nil }
-func (m *mockDriver) PurgeDead(context.Context, time.Time) (int64, error)       { return 0, nil }
-func (m *mockDriver) TickScheduled(context.Context, time.Time) (int64, error)   { return 0, nil }
-func (m *mockDriver) UpsertPeriodicJob(context.Context, string, string, string, int16, []byte, time.Time) error {
-	return nil
-}
-func (m *mockDriver) DuePeriodicJobs(context.Context, time.Time) ([]*driver.PeriodicJob, error) {
-	return nil, nil
-}
-func (m *mockDriver) UpdatePeriodicJobNextRun(context.Context, string, time.Time) error { return nil }
-func (m *mockDriver) UpdatePeriodicJobNextRunTx(context.Context, driver.Tx, string, time.Time) (bool, error) {
-	return false, nil
-}
-func (m *mockDriver) ListPeriodicJobs(context.Context) ([]*driver.PeriodicJob, error) { return nil, nil }
-func (m *mockDriver) PausePeriodicJob(context.Context, string) error                    { return nil }
-func (m *mockDriver) ResumePeriodicJob(context.Context, string) error                   { return nil }
-func (m *mockDriver) BeginTx(context.Context) (driver.Tx, error)                      { return nil, nil }
-func (m *mockDriver) CommitTx(context.Context, driver.Tx) error                         { return nil }
-func (m *mockDriver) RollbackTx(context.Context, driver.Tx) error                      { return nil }
-func (m *mockDriver) UniqueJobExists(context.Context, string) (bool, error)     { return false, nil }
-func (m *mockDriver) PauseQueue(context.Context, string) error                  { return nil }
-func (m *mockDriver) ResumeQueue(context.Context, string) error                 { return nil }
-func (m *mockDriver) IsQueuePaused(context.Context, string) (bool, error)       { return false, nil }
-func (m *mockDriver) QueueStats(context.Context, string) (*driver.QueueStats, error) {
-	return nil, nil
-}
-func (m *mockDriver) ListQueues(context.Context) ([]*driver.QueueStats, error) { return nil, nil }
-func (m *mockDriver) StuckJobs(context.Context, time.Duration) ([]*driver.Job, error) {
-	return nil, nil
-}
-func (m *mockDriver) UpsertWorker(context.Context, string, map[string]int) error { return nil }
-func (m *mockDriver) RemoveWorker(context.Context, string) error                 { return nil }
-func (m *mockDriver) ListWorkers(context.Context, time.Duration) ([]*driver.WorkerInstance, error) {
-	return nil, nil
-}
-func (m *mockDriver) Migrate(context.Context) error                     { return nil }
-func (m *mockDriver) MigrateDown(context.Context, int) error            { return nil }
-func (m *mockDriver) MigrationStatus(context.Context) ([]string, error) { return nil, nil }
-func (m *mockDriver) SetConcurrencyLimit(context.Context, driver.ConcurrencyLimit) error {
-	return nil
-}
-func (m *mockDriver) AcquireConcurrencySlot(context.Context, string, string) (bool, error) {
-	return true, nil
-}
-func (m *mockDriver) AcquireConcurrencySlotForJob(context.Context, int64, string, string) (bool, error) {
-	return true, nil
-}
-func (m *mockDriver) ReleaseConcurrencySlot(context.Context, string, string) error { return nil }
-func (m *mockDriver) SetConcurrencySlotKey(context.Context, int64, string) error   { return nil }
-func (m *mockDriver) CreateWorkflow(context.Context, *driver.WorkflowRecord) error { return nil }
-func (m *mockDriver) CompleteWorkflowTask(context.Context, driver.Tx, string, string) error {
-	return nil
-}
-func (m *mockDriver) FailWorkflowTask(context.Context, string, string) error { return nil }
-func (m *mockDriver) GetWorkflow(context.Context, string) (*driver.WorkflowState, error) {
-	return nil, nil
-}
-func (m *mockDriver) ListWorkflows(context.Context, int, int) ([]*driver.WorkflowState, error) {
-	return nil, nil
-}
-func (m *mockDriver) Close() error { return nil }
 
 func TestElectorSingleRenewLoopOnReacquire(t *testing.T) {
 	md := &mockDriver{}

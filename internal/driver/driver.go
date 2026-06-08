@@ -132,6 +132,9 @@ type Driver interface {
 	Close() error
 
 	SetConcurrencyLimit(ctx context.Context, limit ConcurrencyLimit) error
+	// RegisterConcurrencyLimit records an in-memory limit for Fetch-time global enforcement.
+	// partitioned is true when the client uses a PartitionKeyFn (per-partition slots).
+	RegisterConcurrencyLimit(kind string, maxConcurrent int, partitioned bool)
 	AcquireConcurrencySlot(ctx context.Context, kind, partitionKey string) (acquired bool, err error)
 	AcquireConcurrencySlotForJob(ctx context.Context, jobID int64, kind, partitionKey string) (acquired bool, err error)
 	ReleaseConcurrencySlot(ctx context.Context, kind, partitionKey string) error

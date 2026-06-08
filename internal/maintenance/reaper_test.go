@@ -69,7 +69,7 @@ func (d *reaperDriver) QueueStats(context.Context, string) (*driver.QueueStats, 
 }
 func (d *reaperDriver) ListQueues(context.Context) ([]*driver.QueueStats, error)   { return nil, nil }
 func (d *reaperDriver) TryAcquireLeader(context.Context) (bool, error)             { return false, nil }
-func (d *reaperDriver) RenewLeader(context.Context) error                          { return nil }
+func (d *reaperDriver) VerifyLeader(context.Context) error                           { return nil }
 func (d *reaperDriver) ReleaseLeader(context.Context) error                        { return nil }
 func (d *reaperDriver) UpsertWorker(context.Context, string, map[string]int) error { return nil }
 func (d *reaperDriver) RemoveWorker(context.Context, string) error                 { return nil }
@@ -86,6 +86,7 @@ func (d *reaperDriver) AcquireConcurrencySlot(context.Context, string, string) (
 	return true, nil
 }
 func (d *reaperDriver) ReleaseConcurrencySlot(context.Context, string, string) error { return nil }
+func (d *reaperDriver) SetConcurrencySlotKey(context.Context, int64, string) error   { return nil }
 func (d *reaperDriver) CreateWorkflow(context.Context, *driver.WorkflowRecord) error { return nil }
 func (d *reaperDriver) CompleteWorkflowTask(context.Context, driver.Tx, string, string) error {
 	return nil
@@ -115,7 +116,7 @@ func TestReaperAppliesRetryBackoff(t *testing.T) {
 		return time.Duration(attempt) * time.Minute
 	}
 
-	r := maintenance.NewReaper(rd, slog.Default(), time.Minute, time.Millisecond, 24*time.Hour, retryDelay, nack)
+	r := maintenance.NewReaper(rd, slog.Default(), time.Minute, time.Millisecond, 0, 24*time.Hour, retryDelay, nack)
 	r.Start()
 	time.Sleep(20 * time.Millisecond)
 	r.Stop()

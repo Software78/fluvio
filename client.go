@@ -113,7 +113,7 @@ func (c *Client) Start(ctx context.Context) error {
 
 	c.stopCh = make(chan struct{})
 
-	c.periodic = scheduler.NewPeriodic(c.driver, c.cfg.Logger, c.cfg.PeriodicInterval)
+	c.periodic = scheduler.NewPeriodic(c.driver, c.cfg.Logger, c.cfg.PeriodicInterval, c.cfg.LeaderServicesStartupDelay)
 	for _, reg := range c.pendingPeriodic {
 		if err := c.periodic.Register(context.Background(), reg.cronExpr, reg.kind, reg.data, reg.queue, reg.maxAttempts); err != nil {
 			return err
@@ -136,12 +136,13 @@ func (c *Client) Start(ctx context.Context) error {
 		c.registry.Start()
 	}
 
-	c.sched = scheduler.New(c.driver, c.cfg.Logger, 5*time.Second)
+	c.sched = scheduler.New(c.driver, c.cfg.Logger, 5*time.Second, c.cfg.LeaderServicesStartupDelay)
 	c.reaper = maintenance.NewReaper(
 		c.driver,
 		c.cfg.Logger,
 		c.cfg.JobTimeout,
 		60*time.Second,
+		c.cfg.LeaderServicesStartupDelay,
 		c.cfg.MaxRetryDelay,
 		DefaultRetryDelay,
 		c.nackJob,
@@ -344,6 +345,9 @@ func (c *Client) EnqueueMany(ctx context.Context, argsList []JobArgs, opts ...En
 		return nil, nil
 	}
 	o := applyEnqueueOptions(opts)
+	if o.uniqueKey != nil {
+		return nil, fmt.Errorf("%w: WithUniqueKey is not supported in EnqueueMany; enqueue jobs individually", ErrInvalidConfig)
+	}
 	params := make([]driver.EnqueueParams, len(argsList))
 	for i, args := range argsList {
 		data, err := json.Marshal(args)
@@ -538,8 +542,7 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 		args = plaintext
 	}
 
-	// Partitioned limits acquire here; global limits acquire in driver Fetch and release in Ack/Nack.
-	// Note: stuck-job reaper nacks bypass this defer for partitioned limits (partition key not persisted).
+	// Partitioned limits acquire here; global limits acquire in driver Fetch. All releases in Ack/Nack.
 	if fn := c.partitionKeyFn(dJob.Kind); fn != nil {
 		partitionKey := fn(args)
 		acquired, err := c.driver.AcquireConcurrencySlot(ctx, dJob.Kind, partitionKey)
@@ -549,7 +552,10 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 		if !acquired {
 			return c.nackJob(ctx, dJob, ErrConcurrencySlotUnavailable, time.Now().Add(5*time.Second))
 		}
-		defer func() { _ = c.driver.ReleaseConcurrencySlot(ctx, dJob.Kind, partitionKey) }()
+		if err := c.driver.SetConcurrencySlotKey(ctx, dJob.ID, partitionKey); err != nil {
+			_ = c.driver.ReleaseConcurrencySlot(ctx, dJob.Kind, partitionKey)
+			return err
+		}
 	}
 
 	maxWorkers := 0
@@ -635,6 +641,7 @@ func driverJobToRow(job *driver.Job) JobRow {
 		AttemptedAt: job.AttemptedAt,
 		FinalizedAt: job.FinalizedAt,
 		CreatedAt:   job.CreatedAt,
+		DiedAt:      job.DiedAt,
 		ErrorTrace:  json.RawMessage(job.ErrorTrace),
 		Tags:        job.Tags,
 		UniqueKey:   job.UniqueKey,

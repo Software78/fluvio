@@ -17,6 +17,7 @@ type Reaper struct {
 	logger        *slog.Logger
 	timeout       time.Duration
 	interval      time.Duration
+	startupDelay  time.Duration
 	maxRetryDelay time.Duration
 	retryDelay    retryDelayFunc
 	nack          NackFunc
@@ -27,7 +28,7 @@ type Reaper struct {
 func NewReaper(
 	d driver.Driver,
 	logger *slog.Logger,
-	timeout, interval, maxRetryDelay time.Duration,
+	timeout, interval, startupDelay, maxRetryDelay time.Duration,
 	retryDelay retryDelayFunc,
 	nack NackFunc,
 ) *Reaper {
@@ -39,6 +40,7 @@ func NewReaper(
 		logger:        logger,
 		timeout:       timeout,
 		interval:      interval,
+		startupDelay:  startupDelay,
 		maxRetryDelay: maxRetryDelay,
 		retryDelay:    retryDelay,
 		nack:          nack,
@@ -58,6 +60,13 @@ func (r *Reaper) Stop() {
 
 func (r *Reaper) run() {
 	defer close(r.doneCh)
+	if r.startupDelay > 0 {
+		select {
+		case <-r.stopCh:
+			return
+		case <-time.After(r.startupDelay):
+		}
+	}
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 

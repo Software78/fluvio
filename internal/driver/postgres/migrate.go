@@ -27,7 +27,7 @@ type concurrencyKindConfig struct {
 }
 
 // Driver implements driver.Driver for PostgreSQL.
-// TryAcquireLeader, RenewLeader, and ReleaseLeader must not be called concurrently.
+// TryAcquireLeader, VerifyLeader, and ReleaseLeader must not be called concurrently.
 type Driver struct {
 	pool        *pgxpool.Pool
 	leaderConn  *pgxpool.Conn

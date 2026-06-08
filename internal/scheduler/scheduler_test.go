@@ -146,7 +146,7 @@ func (d *recordingDriver) QueueStats(context.Context, string) (*driver.QueueStat
 }
 func (d *recordingDriver) ListQueues(context.Context) ([]*driver.QueueStats, error) { return nil, nil }
 func (d *recordingDriver) TryAcquireLeader(context.Context) (bool, error)           { return false, nil }
-func (d *recordingDriver) RenewLeader(context.Context) error                        { return nil }
+func (d *recordingDriver) VerifyLeader(context.Context) error                         { return nil }
 func (d *recordingDriver) ReleaseLeader(context.Context) error                      { return nil }
 func (d *recordingDriver) StuckJobs(context.Context, time.Duration) ([]*driver.Job, error) {
 	return nil, nil
@@ -166,6 +166,7 @@ func (d *recordingDriver) AcquireConcurrencySlot(context.Context, string, string
 	return true, nil
 }
 func (d *recordingDriver) ReleaseConcurrencySlot(context.Context, string, string) error { return nil }
+func (d *recordingDriver) SetConcurrencySlotKey(context.Context, int64, string) error   { return nil }
 func (d *recordingDriver) CreateWorkflow(context.Context, *driver.WorkflowRecord) error { return nil }
 func (d *recordingDriver) CompleteWorkflowTask(context.Context, driver.Tx, string, string) error {
 	return nil
@@ -181,7 +182,7 @@ func (d *recordingDriver) Close() error { return nil }
 
 func TestPeriodicDistinctKindsWithColon(t *testing.T) {
 	rd := newRecordingDriver()
-	p := scheduler.NewPeriodic(rd, slog.Default(), time.Millisecond)
+	p := scheduler.NewPeriodic(rd, slog.Default(), time.Millisecond, 0)
 	ctx := context.Background()
 	require.NoError(t, p.Register(ctx, "* * * * *", "foo:bar", []byte(`{}`), "default", 3))
 	require.NoError(t, p.Register(ctx, "* * * * *", "foo", []byte(`{}`), "default", 3))
@@ -200,13 +201,13 @@ func TestPeriodicDistinctKindsWithColon(t *testing.T) {
 }
 
 func TestPeriodicRegisterRejectsInvalidCron(t *testing.T) {
-	p := scheduler.NewPeriodic(newRecordingDriver(), slog.Default(), time.Second)
+	p := scheduler.NewPeriodic(newRecordingDriver(), slog.Default(), time.Second, 0)
 	require.Error(t, p.Register(context.Background(), "not a cron", "k", nil, "default", 3))
 }
 
 func TestPeriodicTickNoDoubleEnqueueUnit(t *testing.T) {
 	rd := newRecordingDriver()
-	p := scheduler.NewPeriodic(rd, slog.Default(), time.Second)
+	p := scheduler.NewPeriodic(rd, slog.Default(), time.Second, 0)
 	ctx := context.Background()
 	require.NoError(t, p.Register(ctx, "* * * * *", "tick-once", []byte(`{}`), "default", 3))
 

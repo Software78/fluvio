@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -58,31 +59,38 @@ func (f *FetchLoop) Stop() {
 
 func (f *FetchLoop) run() {
 	defer close(f.doneCh)
-	ticker := time.NewTicker(f.interval)
-	defer ticker.Stop()
-
+	sleep := f.interval
 	for {
+		if f.tick(&sleep) {
+			return
+		}
 		select {
 		case <-f.stopCh:
 			return
-		case <-ticker.C:
-			if f.tick() {
-				return
-			}
+		case <-time.After(sleep):
 		}
 	}
 }
 
-func (f *FetchLoop) tick() (stop bool) {
+func (f *FetchLoop) tick(sleep *time.Duration) (stop bool) {
 	slots := f.executor.AvailableSlots()
 	if slots <= 0 {
+		*sleep = f.interval
 		return false
 	}
 
 	ctx := context.Background()
 	jobs, err := f.driver.Fetch(ctx, f.queues, f.workerID, slots)
+	if errors.Is(err, driver.ErrQueuesPaused) {
+		f.mu.Lock()
+		f.backoff = 0
+		f.mu.Unlock()
+		*sleep = f.interval
+		return false
+	}
 	if err != nil {
 		f.logger.Error("fetch failed", "error", err)
+		*sleep = f.interval
 		return false
 	}
 
@@ -96,21 +104,15 @@ func (f *FetchLoop) tick() (stop bool) {
 				f.backoff = f.maxBackoff
 			}
 		}
-		sleep := f.backoff
+		*sleep = f.backoff
 		f.mu.Unlock()
-
-		// Stop() blocks until this sleep finishes or stopCh fires; max wait is maxBackoff.
-		select {
-		case <-f.stopCh:
-			return true
-		case <-time.After(sleep):
-		}
 		return false
 	}
 
 	f.mu.Lock()
 	f.backoff = 0
 	f.mu.Unlock()
+	*sleep = f.interval
 
 	for _, job := range jobs {
 		f.executor.Dispatch(context.Background(), job, f.handler)

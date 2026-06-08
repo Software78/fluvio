@@ -8,6 +8,8 @@ import (
 	"github.com/software78/fluvio/internal/driver"
 )
 
+const heartbeatTimeout = 5 * time.Second
+
 // Registry heartbeats a processing client into the fleet worker table.
 type Registry struct {
 	driver   driver.Driver
@@ -41,14 +43,21 @@ func (r *Registry) Start() {
 func (r *Registry) Stop() {
 	close(r.stopCh)
 	<-r.doneCh
-	_ = r.driver.RemoveWorker(context.Background(), r.workerID)
+	ctx, cancel := context.WithTimeout(context.Background(), heartbeatTimeout)
+	defer cancel()
+	_ = r.driver.RemoveWorker(ctx, r.workerID)
+}
+
+func (r *Registry) upsert() error {
+	ctx, cancel := context.WithTimeout(context.Background(), heartbeatTimeout)
+	defer cancel()
+	return r.driver.UpsertWorker(ctx, r.workerID, r.queues)
 }
 
 func (r *Registry) run() {
 	defer close(r.doneCh)
 
-	ctx := context.Background()
-	if err := r.driver.UpsertWorker(ctx, r.workerID, r.queues); err != nil {
+	if err := r.upsert(); err != nil {
 		r.logger.Error("worker registry upsert failed", "error", err)
 	}
 
@@ -60,7 +69,7 @@ func (r *Registry) run() {
 		case <-r.stopCh:
 			return
 		case <-ticker.C:
-			if err := r.driver.UpsertWorker(ctx, r.workerID, r.queues); err != nil {
+			if err := r.upsert(); err != nil {
 				r.logger.Error("worker registry heartbeat failed", "error", err)
 			}
 		}

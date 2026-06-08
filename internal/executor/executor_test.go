@@ -78,7 +78,7 @@ func (f *fakeDriver) QueueStats(context.Context, string) (*driver.QueueStats, er
 }
 func (f *fakeDriver) ListQueues(context.Context) ([]*driver.QueueStats, error) { return nil, nil }
 func (f *fakeDriver) TryAcquireLeader(context.Context) (bool, error)           { return false, nil }
-func (f *fakeDriver) RenewLeader(context.Context) error                        { return nil }
+func (f *fakeDriver) VerifyLeader(context.Context) error                         { return nil }
 func (f *fakeDriver) ReleaseLeader(context.Context) error                      { return nil }
 func (f *fakeDriver) StuckJobs(context.Context, time.Duration) ([]*driver.Job, error) {
 	return nil, nil
@@ -98,6 +98,7 @@ func (f *fakeDriver) AcquireConcurrencySlot(context.Context, string, string) (bo
 	return true, nil
 }
 func (f *fakeDriver) ReleaseConcurrencySlot(context.Context, string, string) error { return nil }
+func (f *fakeDriver) SetConcurrencySlotKey(context.Context, int64, string) error   { return nil }
 func (f *fakeDriver) CreateWorkflow(context.Context, *driver.WorkflowRecord) error { return nil }
 func (f *fakeDriver) CompleteWorkflowTask(context.Context, driver.Tx, string, string) error {
 	return nil
@@ -186,6 +187,50 @@ func TestExecutorStopContextTimeout(t *testing.T) {
 
 	close(block)
 	_ = exec.StopContext(context.Background())
+}
+
+func TestExecutorStopDoesNotRunHandlerAfterClose(t *testing.T) {
+	exec := executor.New(1, slog.Default())
+	block := make(chan struct{})
+	handlerRan := make(chan struct{}, 1)
+
+	handler := func(ctx context.Context, job *driver.Job) error {
+		select {
+		case handlerRan <- struct{}{}:
+		default:
+		}
+		<-block
+		return nil
+	}
+
+	exec.Dispatch(context.Background(), &driver.Job{ID: 1}, handler)
+	select {
+	case <-handlerRan:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	go func() {
+		_ = exec.StopContext(context.Background())
+		close(block)
+	}()
+
+	select {
+	case <-handlerRan:
+		// first run is expected
+	case <-time.After(time.Second):
+	}
+
+	// Dispatch after stop must not run handler.
+	for i := 0; i < 10; i++ {
+		exec.Dispatch(context.Background(), &driver.Job{ID: int64(i + 2)}, handler)
+	}
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-handlerRan:
+		t.Fatal("handler ran after executor stopped")
+	default:
+	}
 }
 
 func TestFetchLoopBackoff(t *testing.T) {

@@ -145,8 +145,8 @@ func (e *Elector) renewLoop(ctx context.Context) {
 			}
 			e.mu.Unlock()
 
-			if err := e.driver.RenewLeader(context.Background()); err != nil {
-				e.logger.Error("leader renew failed", "error", err)
+			if err := e.driver.VerifyLeader(context.Background()); err != nil {
+				e.logger.Error("leader verify failed", "error", err)
 				e.handleLoss()
 				return
 			}

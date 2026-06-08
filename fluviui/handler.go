@@ -1,3 +1,5 @@
+// Package fluviui provides an unauthenticated HTTP API for queue monitoring and control.
+// Deploy behind a reverse proxy with authentication, or wrap handlers with WithMiddleware.
 package fluviui
 
 import (
@@ -8,6 +10,7 @@ import (
 
 type config struct {
 	allowedOrigin string
+	middleware    func(http.Handler) http.Handler
 }
 
 type Option func(*config)
@@ -17,6 +20,13 @@ type Option func(*config)
 func WithAllowedOrigin(origin string) Option {
 	return func(c *config) {
 		c.allowedOrigin = origin
+	}
+}
+
+// WithMiddleware wraps all API handlers (e.g. for authentication).
+func WithMiddleware(mw func(http.Handler) http.Handler) Option {
+	return func(c *config) {
+		c.middleware = mw
 	}
 }
 
@@ -52,13 +62,20 @@ func handlerFor(client apiClient, opts ...Option) http.Handler {
 
 	mux := http.NewServeMux()
 	cm := corsMiddleware(cfg)
+	wrap := func(h http.Handler) http.Handler {
+		h = cm(h)
+		if cfg.middleware != nil {
+			h = cfg.middleware(h)
+		}
+		return h
+	}
 
-	mux.Handle("/fluvio/api/events", cm(sseHandler(client)))
-	mux.Handle("/fluvio/api/workers", cm(workersHandler(client)))
-	mux.Handle("/fluvio/api/jobs", cm(jobsHandler(client)))
-	mux.Handle("/fluvio/api/jobs/", cm(jobDetailHandler(client)))
-	mux.Handle("/fluvio/api/queues", cm(queuesHandler(client)))
-	mux.Handle("/fluvio/api/queues/", cm(queueActionHandler(client)))
+	mux.Handle("/fluvio/api/events", wrap(sseHandler(client)))
+	mux.Handle("/fluvio/api/workers", wrap(workersHandler(client)))
+	mux.Handle("/fluvio/api/jobs", wrap(jobsHandler(client)))
+	mux.Handle("/fluvio/api/jobs/", wrap(jobDetailHandler(client)))
+	mux.Handle("/fluvio/api/queues", wrap(queuesHandler(client)))
+	mux.Handle("/fluvio/api/queues/", wrap(queueActionHandler(client)))
 
 	return mux
 }

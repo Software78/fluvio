@@ -48,17 +48,17 @@ func TestMigrateUpDownStatus(t *testing.T) {
 
 	status, err := d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 9)
+	require.Len(t, status, 11)
 
 	require.NoError(t, d.MigrateDown(ctx, 1))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 8)
+	require.Len(t, status, 10)
 
 	require.NoError(t, d.Migrate(ctx))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 9)
+	require.Len(t, status, 11)
 }
 
 func TestEnqueueFetchAck(t *testing.T) {
@@ -203,8 +203,8 @@ func TestPauseQueue(t *testing.T) {
 	require.NoError(t, d.PauseQueue(ctx, "default"))
 
 	jobs, err := d.Fetch(ctx, []string{"default"}, "w1", 10)
-	require.NoError(t, err)
-	require.Empty(t, jobs)
+	require.ErrorIs(t, err, driver.ErrQueuesPaused)
+	require.Nil(t, jobs)
 
 	require.NoError(t, d.ResumeQueue(ctx, "default"))
 	jobs, err = d.Fetch(ctx, []string{"default"}, "w1", 10)

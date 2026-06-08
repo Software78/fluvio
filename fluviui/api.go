@@ -38,6 +38,7 @@ type QueueStatsView struct {
 	Dead      int64  `json:"dead"`
 	Completed int64  `json:"completed"`
 	Failed    int64  `json:"failed"`
+	Cancelled int64  `json:"cancelled"`
 	Paused    bool   `json:"paused"`
 }
 
@@ -86,7 +87,7 @@ func listQueuesView(ctx context.Context, client apiClient) ([]*QueueStatsView, e
 		out[i] = &QueueStatsView{
 			Queue: s.Queue, Pending: s.Pending, Running: s.Running,
 			Scheduled: s.Scheduled, Dead: s.Dead, Completed: s.Completed,
-			Failed: s.Failed, Paused: s.Paused,
+			Failed: s.Failed, Cancelled: s.Cancelled, Paused: s.Paused,
 		}
 	}
 	return out, nil

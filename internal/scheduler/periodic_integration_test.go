@@ -46,7 +46,7 @@ func TestPeriodicRegisterPersistsRow(t *testing.T) {
 	pool, d := setupPeriodicIntegration(t)
 	ctx := context.Background()
 
-	p := scheduler.NewPeriodic(d, slog.Default(), time.Minute)
+	p := scheduler.NewPeriodic(d, slog.Default(), time.Minute, 0)
 	require.NoError(t, p.Register(ctx, "0 9 * * *", "daily-report", []byte(`{"format":"pdf"}`), "critical", 5))
 
 	var kind, cron, queue string
@@ -68,7 +68,7 @@ func TestPeriodicTickEnqueuesAndAdvances(t *testing.T) {
 	pool, d := setupPeriodicIntegration(t)
 	ctx := context.Background()
 
-	p := scheduler.NewPeriodic(d, slog.Default(), time.Minute)
+	p := scheduler.NewPeriodic(d, slog.Default(), time.Minute, 0)
 	require.NoError(t, p.Register(ctx, "* * * * *", "heartbeat", []byte(`{}`), "default", 3))
 
 	past := time.Now().Add(-time.Hour)
@@ -93,7 +93,7 @@ func TestPeriodicTickNoDoubleEnqueue(t *testing.T) {
 	pool, d := setupPeriodicIntegration(t)
 	ctx := context.Background()
 
-	p := scheduler.NewPeriodic(d, slog.Default(), time.Minute)
+	p := scheduler.NewPeriodic(d, slog.Default(), time.Minute, 0)
 	require.NoError(t, p.Register(ctx, "* * * * *", "once", []byte(`{}`), "default", 3))
 
 	past := time.Now().Add(-time.Hour)

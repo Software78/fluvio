@@ -103,6 +103,7 @@ type JobRow struct {
 	AttemptedAt *time.Time
 	FinalizedAt *time.Time
 	CreatedAt   time.Time
+	DiedAt      *time.Time // set for dead jobs from the DLQ
 	ErrorTrace  json.RawMessage
 	Tags        []string
 	UniqueKey   *string

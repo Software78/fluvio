@@ -22,13 +22,15 @@ type Job struct {
 	AttemptedAt *time.Time
 	FinalizedAt *time.Time
 	CreatedAt   time.Time
+	DiedAt      *time.Time
 	ErrorTrace  []byte
 	Tags           []string
 	UniqueKey      *string
 	Metadata       []byte
-	WorkflowID     *string
-	WorkflowTaskID *string
-	Encrypted      bool
+	WorkflowID         *string
+	WorkflowTaskID     *string
+	Encrypted          bool
+	ConcurrencySlotKey *string // nil = no slot; non-nil = held slot key ("" = global)
 }
 
 type EnqueueParams struct {
@@ -54,6 +56,7 @@ type QueueStats struct {
 	Dead      int64
 	Completed int64
 	Failed    int64
+	Cancelled int64
 	Paused    bool
 }
 
@@ -114,7 +117,7 @@ type Driver interface {
 	ListQueues(ctx context.Context) ([]*QueueStats, error)
 
 	TryAcquireLeader(ctx context.Context) (bool, error)
-	RenewLeader(ctx context.Context) error
+	VerifyLeader(ctx context.Context) error
 	ReleaseLeader(ctx context.Context) error
 
 	StuckJobs(ctx context.Context, timeout time.Duration) ([]*Job, error)
@@ -131,6 +134,7 @@ type Driver interface {
 	SetConcurrencyLimit(ctx context.Context, limit ConcurrencyLimit) error
 	AcquireConcurrencySlot(ctx context.Context, kind, partitionKey string) (acquired bool, err error)
 	ReleaseConcurrencySlot(ctx context.Context, kind, partitionKey string) error
+	SetConcurrencySlotKey(ctx context.Context, jobID int64, partitionKey string) error
 
 	CreateWorkflow(ctx context.Context, w *WorkflowRecord) error
 	CompleteWorkflowTask(ctx context.Context, tx Tx, workflowID, taskID string) error

@@ -1,23 +1,38 @@
 # Fluvio
 
-A production-grade background job queue for Go backed by PostgreSQL. Enqueue jobs in the same database transaction as your business logic — no Redis, no separate broker.
+A production-grade background job queue for Go backed by your relational database. Enqueue jobs in the same database transaction as your business logic — no Redis, no separate broker.
 
-## Features (OSS)
+## Features
 
-| Feature | OSS | Pro (forthcoming) |
-|---------|-----|-------------------|
-| Transactional enqueue | Yes | Yes |
-| Fetch/work/retry with SKIP LOCKED | Yes | Yes |
-| Multiple queues | Yes | Yes |
-| Unique jobs | Yes | Yes |
-| Scheduled jobs | Yes | Yes |
-| In-memory periodic (cron) | Yes | Yes |
-| Workflows (DAG) | — | Pro |
-| Sequences | — | Pro |
-| Concurrency limits | — | Pro |
-| Dead letter queue | — | Pro |
-| Durable periodic | — | Pro |
-| Encrypted args | — | Pro |
+| Feature | Status |
+|---------|--------|
+| Transactional enqueue | Yes |
+| Fetch/work/retry with SKIP LOCKED | Yes |
+| Multiple queues | Yes |
+| Unique jobs | Yes |
+| Scheduled jobs | Yes |
+| Durable periodic (cron) | Yes |
+| Workflows (DAG) | Yes |
+| Concurrency limits | Yes |
+| Dead letter queue | Yes |
+| Encrypted args | Yes |
+| Sequences | Planned |
+
+## Database support
+
+Fluvio is built on a `driver.Driver` interface so storage backends are swappable. Only PostgreSQL ships today; other relational drivers are on the roadmap.
+
+| Database | Status | Notes |
+|----------|--------|-------|
+| PostgreSQL | Supported | Production-ready via `github.com/software78/fluvio/postgres` (pgx) |
+| MySQL / MariaDB | Planned | `FOR UPDATE SKIP LOCKED` (MySQL 8.0+); lease-table leader election |
+| SQLite | Planned | Single-node and local dev; file-based migrations |
+| SQL Server | Planned | `READPAST` / row-lock patterns for job fetch |
+| CockroachDB | Planned | Postgres-compatible dialect; validate `SKIP LOCKED` and advisory locks |
+
+Each driver will implement the same interface — enqueue, fetch, ack/nack, migrations, leader election, and the advanced features above — with SQL adapted to the target engine. Transactional enqueue will use that database's native transaction type (e.g. `pgx.Tx`, `*sql.Tx`).
+
+Contributions for new drivers are welcome; open an issue before starting large backend work so schema and locking semantics stay aligned.
 
 ## Quick start
 
@@ -133,6 +148,75 @@ Endpoints:
 
 `GET /fluvio/api/jobs` returns a paginated object: `{ "jobs": [...], "limit": 50, "offset": 0, "has_more": false }`. Default `limit` is 50 (max 100). Use `has_more` to fetch the next page with a higher `offset`.
 
+## Advanced features
+
+### Durable periodic jobs
+
+Register cron schedules that survive restarts. The leader-elected instance enqueues jobs on each tick.
+
+```go
+client.AddPeriodicJob("0 9 * * *", DailyReportArgs{Format: "pdf"})
+```
+
+List, pause, and resume periodic jobs with `ListPeriodicJobs`, `PausePeriodicJob`, and `ResumePeriodicJob`.
+
+### Workflows (DAG)
+
+Chain jobs with dependencies. Root tasks enqueue immediately; downstream tasks enqueue when their dependencies complete. A failed task cancels dependents.
+
+```go
+wfID, err := client.EnqueueWorkflow(ctx, fluvio.NewWorkflow().
+    Task("A", TaskAArgs{}).
+    Task("B", TaskBArgs{}, fluvio.WithDependsOn("A")).
+    Task("C", TaskCArgs{}, fluvio.WithDependsOn("A")).
+    Task("D", TaskDArgs{}, fluvio.WithDependsOn("B", "C")))
+
+state, err := client.GetWorkflow(ctx, wfID)
+```
+
+Use `WithTaskEnqueueOptions` to pass enqueue options (queue, max attempts, etc.) to individual tasks.
+
+### Concurrency limits
+
+Cap how many jobs of a given kind run at once across the fleet. Limits are stored in the database; the leader enforces them before fetch.
+
+```go
+client.SetConcurrencyLimit(ctx, fluvio.ConcurrencyLimitConfig{
+    Kind:          "send_email",
+    MaxConcurrent: 5,
+})
+```
+
+For per-tenant limits, provide a `PartitionKeyFn` that extracts a partition from raw args JSON. `PartitionKeyFn` is held in memory only — each worker process must call `SetConcurrencyLimit` on startup.
+
+### Dead letter queue
+
+Jobs that exhaust retries move to `dead` state and are copied to `fluvio_dead_jobs`. Inspect, replay, or purge them:
+
+```go
+dead, err := client.ListDeadJobs(ctx, 50, 0)
+err = client.ReplayDeadJob(ctx, jobID)
+n, err := client.PurgeDeadJobs(ctx, time.Now().Add(-30*24*time.Hour))
+```
+
+### Encrypted args
+
+Encrypt job arguments at rest with AES-256-GCM or a custom `KeyProvider` (KMS, Vault, etc.):
+
+```go
+key, _ := hex.DecodeString(os.Getenv("FLUVIO_ENCRYPTION_KEY")) // 32 bytes
+kp, _ := fluvio.NewAESGCMKeyProvider(key)
+
+client, _ := fluvio.NewClient(d, &fluvio.Config{
+    KeyProvider: kp,
+    // ...
+})
+
+client.Enqueue(ctx, SensitiveArgs{Token: "secret"}, fluvio.WithEncryption())
+```
+
+Workers decrypt args automatically before `Work` is called.
+
 ## CLI
 
 ```bash
@@ -157,10 +241,12 @@ make build   # outputs bin/fluvio
 | `FetchInterval` | 500ms | Poll interval for new jobs |
 | `JobTimeout` | 30m | Max running time before reaper nacks |
 | `MaxRetryDelay` | 24h | Cap on exponential backoff |
-| `PeriodicInterval` | 30s | Tick interval for in-memory cron jobs |
+| `PeriodicInterval` | 30s | Tick interval for durable cron jobs |
 | `WorkerID` | `{hostname}-{pid}` | Instance identifier stored in `attempted_by` and the fleet registry |
 | `WorkerHeartbeatInterval` | 30s | How often processing clients heartbeat to the fleet registry |
 | `WorkerTTL` | 90s | Staleness threshold when listing live workers via `ListWorkers` |
+| `KeyProvider` | nil | Enables `WithEncryption()` when set |
+| `LeaderServicesStartupDelay` | 0 | Delay before first scheduler/reaper/periodic tick after leader election (recommend 15s in production) |
 
 Set `WorkerID` explicitly in production so job pickup and fleet visibility are stable across restarts (e.g. `"api-worker-" + os.Getenv("HOSTNAME")`). Use `fluvio.DefaultWorkerID()` for the built-in default.
 
@@ -170,7 +256,15 @@ Processing clients with at least one queue where `MaxWorkers > 0` register in th
 
 Per-queue `MaxWorkers` controls concurrency — each queue gets its own fetch loop capped at that limit. Set `MaxWorkers` to 0 to disable processing for a queue. Omit queues entirely for insert-only clients.
 
-Leader election (Postgres advisory lock) runs scheduled sweeps, in-memory periodic jobs, and the stuck-job reaper on one instance.
+Leader election (Postgres advisory lock) runs scheduled sweeps, durable periodic jobs, and the stuck-job reaper on one instance. For production HA, prefer `UseLeaseTable: true` on the Postgres driver; advisory-lock mode requires a stable dedicated connection.
+
+### Schema notes
+
+The `fluvio_jobs` columns `batch_id`, `sequence_id`, and `sequence_pos` are reserved for a future sequences feature and are not currently used by the library.
+
+### fluviui
+
+The `fluviui` HTTP handlers are unauthenticated. Deploy behind a reverse proxy or use `fluviui.WithMiddleware` to add authentication.
 
 ### Postgres driver (`postgres.Config`)
 

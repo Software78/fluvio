@@ -92,6 +92,11 @@ func validateWorkflowDAG(tasks []workflowTaskDef) error {
 		}
 	}
 
+	taskByID := make(map[string]workflowTaskDef, len(tasks))
+	for _, t := range tasks {
+		taskByID[t.taskID] = t
+	}
+
 	visited := make(map[string]int, len(tasks)) // 0=unvisited, 1=visiting, 2=done
 	var visit func(taskID string) error
 	visit = func(taskID string) error {
@@ -102,16 +107,11 @@ func validateWorkflowDAG(tasks []workflowTaskDef) error {
 			return nil
 		}
 		visited[taskID] = 1
-		for _, t := range tasks {
-			if t.taskID != taskID {
-				continue
+		t := taskByID[taskID]
+		for _, dep := range t.dependsOn {
+			if err := visit(dep); err != nil {
+				return err
 			}
-			for _, dep := range t.dependsOn {
-				if err := visit(dep); err != nil {
-					return err
-				}
-			}
-			break
 		}
 		visited[taskID] = 2
 		return nil

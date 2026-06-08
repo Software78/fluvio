@@ -21,8 +21,9 @@ type Config struct {
 	ErrorHandler            func(ctx context.Context, job JobRow, err error)
 	WorkerID                string
 	WorkerHeartbeatInterval time.Duration
-	WorkerTTL               time.Duration
-	KeyProvider             KeyProvider // if non-nil, encryption is available
+	WorkerTTL                   time.Duration
+	LeaderServicesStartupDelay  time.Duration // delay before first scheduler/reaper/periodic tick after leader election
+	KeyProvider                 KeyProvider   // if non-nil, encryption is available
 }
 
 type QueueConfig struct {

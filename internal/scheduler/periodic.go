@@ -11,26 +11,28 @@ import (
 )
 
 type Periodic struct {
-	driver    driver.Driver
-	logger    *slog.Logger
-	interval  time.Duration
-	parser    cron.Parser
-	schedules sync.Map // kind -> cron.Schedule
-	stopCh    chan struct{}
-	doneCh    chan struct{}
+	driver       driver.Driver
+	logger       *slog.Logger
+	interval     time.Duration
+	startupDelay time.Duration
+	parser       cron.Parser
+	schedules    sync.Map // kind -> cron.Schedule
+	stopCh       chan struct{}
+	doneCh       chan struct{}
 }
 
-func NewPeriodic(d driver.Driver, logger *slog.Logger, interval time.Duration) *Periodic {
+func NewPeriodic(d driver.Driver, logger *slog.Logger, interval, startupDelay time.Duration) *Periodic {
 	if interval == 0 {
 		interval = 30 * time.Second
 	}
 	return &Periodic{
-		driver:   d,
-		logger:   logger,
-		interval: interval,
-		parser:   cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
+		driver:       d,
+		logger:       logger,
+		interval:     interval,
+		startupDelay: startupDelay,
+		parser:       cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
+		stopCh:       make(chan struct{}),
+		doneCh:       make(chan struct{}),
 	}
 }
 
@@ -61,6 +63,13 @@ func (p *Periodic) Stop() {
 
 func (p *Periodic) run() {
 	defer close(p.doneCh)
+	if p.startupDelay > 0 {
+		select {
+		case <-p.stopCh:
+			return
+		case <-time.After(p.startupDelay):
+		}
+	}
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 

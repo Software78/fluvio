@@ -20,9 +20,10 @@ const leaderLockID int64 = 0x666c7576696f
 
 const jobColumns = `id, queue, kind, args, state, priority, attempt, max_attempts,
 	attempted_by, scheduled_at, attempted_at, finalized_at, created_at,
-	error_trace, tags, unique_key, metadata, workflow_id, workflow_task_id, encrypted`
+	error_trace, tags, unique_key, metadata, workflow_id, workflow_task_id, encrypted,
+	concurrency_slot_key`
 
-const deadJobColumns = `id, queue, kind, args, error_trace, metadata, tags, died_at`
+const deadJobColumns = `id, queue, kind, args, error_trace, metadata, tags, died_at, encrypted`
 
 func scanJob(row pgx.Row) (*driver.Job, error) {
 	var j driver.Job
@@ -32,6 +33,7 @@ func scanJob(row pgx.Row) (*driver.Job, error) {
 		&j.ID, &j.Queue, &j.Kind, &args, &j.State, &j.Priority, &j.Attempt, &j.MaxAttempts,
 		&j.AttemptedBy, &j.ScheduledAt, &j.AttemptedAt, &j.FinalizedAt, &j.CreatedAt,
 		&errorTrace, &j.Tags, &uniqueKey, &metadata, &workflowID, &workflowTaskID, &j.Encrypted,
+		&j.ConcurrencySlotKey,
 	)
 	if err != nil {
 		return nil, err
@@ -62,7 +64,7 @@ func scanDeadJob(row pgx.Row) (*driver.Job, error) {
 	var args, metadata, errorTrace []byte
 	var diedAt time.Time
 	err := row.Scan(
-		&j.ID, &j.Queue, &j.Kind, &args, &errorTrace, &metadata, &j.Tags, &diedAt,
+		&j.ID, &j.Queue, &j.Kind, &args, &errorTrace, &metadata, &j.Tags, &diedAt, &j.Encrypted,
 	)
 	if err != nil {
 		return nil, err
@@ -71,7 +73,7 @@ func scanDeadJob(row pgx.Row) (*driver.Job, error) {
 	j.Args = args
 	j.Metadata = metadata
 	j.ErrorTrace = errorTrace
-	j.CreatedAt = diedAt
+	j.DiedAt = &diedAt
 	j.FinalizedAt = &diedAt
 	return &j, nil
 }
@@ -203,7 +205,7 @@ func (d *Driver) Fetch(ctx context.Context, queues []string, workerID string, ma
 		return nil, err
 	}
 	if len(activeQueues) == 0 {
-		return nil, nil
+		return nil, driver.ErrQueuesPaused
 	}
 
 	rows, err := d.pool.Query(ctx, fetchJobsSQL, activeQueues, maxJobs, workerID)
@@ -230,6 +232,14 @@ func (d *Driver) Fetch(ctx context.Context, queues []string, workerID string, ma
 			_ = d.Nack(ctx, job.ID, fluvio.ErrConcurrencySlotUnavailable, time.Now().UTC().Add(5*time.Second))
 			continue
 		}
+		if _, err := d.pool.Exec(ctx, `
+			UPDATE fluvio_jobs SET concurrency_slot_key = '' WHERE id = $1 AND state = 'running'
+		`, job.ID); err != nil {
+			_ = d.ReleaseConcurrencySlot(ctx, job.Kind, "")
+			return nil, err
+		}
+		key := ""
+		job.ConcurrencySlotKey = &key
 		out = append(out, job)
 	}
 	return out, nil
@@ -268,17 +278,33 @@ func (d *Driver) Ack(ctx context.Context, jobID int64) error {
 
 	var kind string
 	var workflowID, workflowTaskID *string
+	var slotKey *string
 	err = tx.QueryRow(ctx, `
-		UPDATE fluvio_jobs
-		SET state = 'completed', finalized_at = now()
-		WHERE id = $1 AND state = 'running'
-		RETURNING kind, workflow_id, workflow_task_id
-	`, jobID).Scan(&kind, &workflowID, &workflowTaskID)
+		SELECT kind, workflow_id, workflow_task_id, concurrency_slot_key
+		FROM fluvio_jobs WHERE id = $1 AND state = 'running'
+		FOR UPDATE
+	`, jobID).Scan(&kind, &workflowID, &workflowTaskID, &slotKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fluvio.ErrJobNotFound
 		}
 		return err
+	}
+
+	if err := d.releaseConcurrencySlotIfHeld(ctx, tx, kind, slotKey, false); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE fluvio_jobs
+		SET state = 'completed', finalized_at = now(), concurrency_slot_key = NULL
+		WHERE id = $1 AND state = 'running'
+	`, jobID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fluvio.ErrJobNotFound
 	}
 
 	if workflowID != nil && workflowTaskID != nil {
@@ -287,16 +313,7 @@ func (d *Driver) Ack(ctx context.Context, jobID int64) error {
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-
-	if d.isGlobalConcurrencyKind(kind) {
-		if err := d.ReleaseConcurrencySlot(ctx, kind, ""); err != nil {
-			return err
-		}
-	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 type errorTraceEntry struct {
@@ -317,16 +334,18 @@ func (d *Driver) Nack(ctx context.Context, jobID int64, jobErr error, nextAttemp
 	var tags []string
 	var attempt, maxAttempts int16
 	var errorTrace []byte
+	var encrypted bool
 	var workflowID, workflowTaskID *string
+	var slotKey *string
 	err = tx.QueryRow(ctx, `
 		SELECT queue, kind, args, attempt, max_attempts,
 			COALESCE(error_trace, '[]'::jsonb),
-			metadata, tags, workflow_id, workflow_task_id
+			metadata, tags, workflow_id, workflow_task_id, encrypted, concurrency_slot_key
 		FROM fluvio_jobs WHERE id = $1 AND state = 'running'
 		FOR UPDATE
 	`, jobID).Scan(
 		&queue, &kind, &args, &attempt, &maxAttempts,
-		&errorTrace, &metadata, &tags, &workflowID, &workflowTaskID,
+		&errorTrace, &metadata, &tags, &workflowID, &workflowTaskID, &encrypted, &slotKey,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -344,23 +363,28 @@ func (d *Driver) Nack(ctx context.Context, jobID int64, jobErr error, nextAttemp
 	})
 	newTrace, _ := json.Marshal(trace)
 
+	skipRelease := errors.Is(jobErr, fluvio.ErrConcurrencySlotUnavailable)
+	if err := d.releaseConcurrencySlotIfHeld(ctx, tx, kind, slotKey, skipRelease); err != nil {
+		return err
+	}
+
 	var tag pgconn.CommandTag
 	if attempt >= maxAttempts {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO fluvio_dead_jobs (id, queue, kind, args, error_trace, metadata, tags)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-		`, jobID, queue, kind, args, newTrace, metadata, tags); err != nil {
+			INSERT INTO fluvio_dead_jobs (id, queue, kind, args, error_trace, metadata, tags, encrypted)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, jobID, queue, kind, args, newTrace, metadata, tags, encrypted); err != nil {
 			return err
 		}
 		tag, err = tx.Exec(ctx, `
 			UPDATE fluvio_jobs
-			SET state = 'dead', finalized_at = now(), error_trace = $2
+			SET state = 'dead', finalized_at = now(), error_trace = $2, concurrency_slot_key = NULL
 			WHERE id = $1
 		`, jobID, newTrace)
 	} else {
 		tag, err = tx.Exec(ctx, `
 			UPDATE fluvio_jobs
-			SET state = 'scheduled', scheduled_at = $2, error_trace = $3
+			SET state = 'scheduled', scheduled_at = $2, error_trace = $3, concurrency_slot_key = NULL
 			WHERE id = $1
 		`, jobID, nextAttemptAt, newTrace)
 	}
@@ -378,14 +402,7 @@ func (d *Driver) Nack(ctx context.Context, jobID int64, jobErr error, nextAttemp
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	// Do not release when the job never acquired a slot (Fetch-time concurrency rejection).
-	if d.isGlobalConcurrencyKind(kind) && !errors.Is(jobErr, fluvio.ErrConcurrencySlotUnavailable) {
-		return d.ReleaseConcurrencySlot(ctx, kind, "")
-	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (d *Driver) Cancel(ctx context.Context, jobID int64) error {
@@ -479,12 +496,13 @@ func (d *Driver) ReplayDead(ctx context.Context, jobID int64) error {
 	var queue, kind string
 	var args, metadata []byte
 	var tags []string
+	var encrypted bool
 	err = tx.QueryRow(ctx, `
-		SELECT queue, kind, args, metadata, tags
+		SELECT queue, kind, args, metadata, tags, encrypted
 		FROM fluvio_dead_jobs
 		WHERE id = $1 AND replayed_at IS NULL
 		FOR UPDATE
-	`, jobID).Scan(&queue, &kind, &args, &metadata, &tags)
+	`, jobID).Scan(&queue, &kind, &args, &metadata, &tags, &encrypted)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fluvio.ErrJobNotFound
@@ -510,9 +528,9 @@ func (d *Driver) ReplayDead(ctx context.Context, jobID int64) error {
 	_, err = tx.Exec(ctx, `
 		INSERT INTO fluvio_jobs (
 			queue, kind, args, state, priority, max_attempts,
-			scheduled_at, tags, metadata
-		) VALUES ($1, $2, $3, 'pending', $4, $5, now(), $6, $7)
-	`, queue, kind, args, priority, maxAttempts, tags, metadata)
+			scheduled_at, tags, metadata, encrypted
+		) VALUES ($1, $2, $3, 'pending', $4, $5, now(), $6, $7, $8)
+	`, queue, kind, args, priority, maxAttempts, tags, metadata, encrypted)
 	if err != nil {
 		return err
 	}
@@ -603,6 +621,7 @@ func (d *Driver) QueueStats(ctx context.Context, queue string) (*driver.QueueSta
 			COUNT(*) FILTER (WHERE state = 'dead') AS dead,
 			COUNT(*) FILTER (WHERE state = 'completed') AS completed,
 			COUNT(*) FILTER (WHERE state = 'failed') AS failed,
+			COUNT(*) FILTER (WHERE state = 'cancelled') AS cancelled,
 			COALESCE((SELECT paused FROM fluvio_queue_meta WHERE queue = $1), false) AS paused
 		FROM fluvio_jobs WHERE queue = $1
 	`, queue)
@@ -610,7 +629,7 @@ func (d *Driver) QueueStats(ctx context.Context, queue string) (*driver.QueueSta
 	stats := &driver.QueueStats{}
 	err := row.Scan(
 		&stats.Queue, &stats.Pending, &stats.Running, &stats.Scheduled,
-		&stats.Dead, &stats.Completed, &stats.Failed, &stats.Paused,
+		&stats.Dead, &stats.Completed, &stats.Failed, &stats.Cancelled, &stats.Paused,
 	)
 	if err != nil {
 		return nil, err
@@ -628,6 +647,7 @@ func (d *Driver) ListQueues(ctx context.Context) ([]*driver.QueueStats, error) {
 			COUNT(j.id) FILTER (WHERE j.state = 'dead') AS dead,
 			COUNT(j.id) FILTER (WHERE j.state = 'completed') AS completed,
 			COUNT(j.id) FILTER (WHERE j.state = 'failed') AS failed,
+			COUNT(j.id) FILTER (WHERE j.state = 'cancelled') AS cancelled,
 			COALESCE(m.paused, false) AS paused
 		FROM (
 			SELECT DISTINCT queue FROM fluvio_jobs
@@ -649,7 +669,7 @@ func (d *Driver) ListQueues(ctx context.Context) ([]*driver.QueueStats, error) {
 		s := &driver.QueueStats{}
 		if err := rows.Scan(
 			&s.Queue, &s.Pending, &s.Running, &s.Scheduled,
-			&s.Dead, &s.Completed, &s.Failed, &s.Paused,
+			&s.Dead, &s.Completed, &s.Failed, &s.Cancelled, &s.Paused,
 		); err != nil {
 			return nil, err
 		}
@@ -677,19 +697,42 @@ func (d *Driver) TryAcquireLeader(ctx context.Context) (bool, error) {
 	return acquired, err
 }
 
-func (d *Driver) RenewLeader(ctx context.Context) error {
-	if !d.useLease {
+func (d *Driver) VerifyLeader(ctx context.Context) error {
+	if d.useLease {
+		tag, err := d.pool.Exec(ctx, `
+			UPDATE fluvio_leader
+			SET expires_at = now() + interval '60 seconds'
+			WHERE id = 'singleton' AND elected_by = $1
+		`, d.leaderID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return errLeaderLost
+		}
 		return nil
 	}
-	tag, err := d.pool.Exec(ctx, `
-		UPDATE fluvio_leader
-		SET expires_at = now() + interval '60 seconds'
-		WHERE id = 'singleton' AND elected_by = $1
-	`, d.leaderID)
-	if err != nil {
-		return err
+
+	d.leaderMu.Lock()
+	conn := d.leaderConn
+	d.leaderMu.Unlock()
+
+	if conn == nil {
+		return errLeaderLost
 	}
-	if tag.RowsAffected() == 0 {
+	if err := conn.Ping(ctx); err != nil {
+		return errLeaderLost
+	}
+	var held int
+	err := conn.QueryRow(ctx, `
+		SELECT COUNT(*) FROM pg_locks
+		WHERE locktype = 'advisory' AND classid = 0 AND objid = $1
+		  AND pid = pg_backend_pid()
+	`, leaderLockID).Scan(&held)
+	if err != nil {
+		return errLeaderLost
+	}
+	if held == 0 {
 		return errLeaderLost
 	}
 	return nil
@@ -744,12 +787,12 @@ func (d *Driver) tryAcquireLease(ctx context.Context) (bool, error) {
 }
 
 func (d *Driver) StuckJobs(ctx context.Context, timeout time.Duration) ([]*driver.Job, error) {
-	interval := fmt.Sprintf("%d seconds", int64(timeout.Seconds()))
+	cutoff := time.Now().UTC().Add(-timeout)
 	rows, err := d.pool.Query(ctx, `
 		SELECT `+jobColumns+`
 		FROM fluvio_jobs
-		WHERE state = 'running' AND attempted_at < now() - $1::interval
-	`, interval)
+		WHERE state = 'running' AND attempted_at < $1
+	`, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -781,13 +824,13 @@ func (d *Driver) RemoveWorker(ctx context.Context, workerID string) error {
 }
 
 func (d *Driver) ListWorkers(ctx context.Context, staleAfter time.Duration) ([]*driver.WorkerInstance, error) {
-	interval := fmt.Sprintf("%d seconds", int64(staleAfter.Seconds()))
+	cutoff := time.Now().UTC().Add(-staleAfter)
 	rows, err := d.pool.Query(ctx, `
 		SELECT worker_id, queues, started_at, last_seen
 		FROM fluvio_workers
-		WHERE last_seen > now() - $1::interval
+		WHERE last_seen > $1
 		ORDER BY worker_id
-	`, interval)
+	`, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -913,7 +956,6 @@ func (d *Driver) DuePeriodicJobs(ctx context.Context, now time.Time) ([]*driver.
 		SELECT `+periodicJobColumns+`
 		FROM fluvio_periodic_jobs
 		WHERE next_run_at <= $1 AND paused = false
-		FOR UPDATE SKIP LOCKED
 	`, now)
 	if err != nil {
 		return nil, err

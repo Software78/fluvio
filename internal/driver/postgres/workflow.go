@@ -279,17 +279,52 @@ func (d *Driver) ListWorkflows(ctx context.Context, limit, offset int) ([]*drive
 	defer rows.Close()
 
 	var out []*driver.WorkflowState
+	var ids []string
 	for rows.Next() {
 		var ws driver.WorkflowState
 		if err := rows.Scan(&ws.ID, &ws.State, &ws.CreatedAt); err != nil {
 			return nil, err
 		}
-		tasks, err := d.loadWorkflowTasks(ctx, ws.ID)
-		if err != nil {
+		ids = append(ids, ws.ID)
+		out = append(out, &ws)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	tasksByWorkflow, err := d.loadWorkflowTasksBatch(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, ws := range out {
+		ws.Tasks = tasksByWorkflow[ws.ID]
+	}
+	return out, nil
+}
+
+func (d *Driver) loadWorkflowTasksBatch(ctx context.Context, workflowIDs []string) (map[string][]driver.WorkflowTaskState, error) {
+	rows, err := d.pool.Query(ctx, `
+		SELECT workflow_id, task_id, state, depends_on, job_id
+		FROM fluvio_workflow_tasks
+		WHERE workflow_id = ANY($1)
+		ORDER BY workflow_id, task_id
+	`, workflowIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string][]driver.WorkflowTaskState, len(workflowIDs))
+	for rows.Next() {
+		var workflowID string
+		var t driver.WorkflowTaskState
+		if err := rows.Scan(&workflowID, &t.TaskID, &t.State, &t.DependsOn, &t.JobID); err != nil {
 			return nil, err
 		}
-		ws.Tasks = tasks
-		out = append(out, &ws)
+		out[workflowID] = append(out[workflowID], t)
 	}
 	return out, rows.Err()
 }

@@ -45,26 +45,17 @@ func (e *Executor) Dispatch(ctx context.Context, job *driver.Job, handler JobHan
 		e.mu.Unlock()
 		return
 	}
+	e.wg.Add(1)
 	e.mu.Unlock()
 
 	go func() {
+		defer e.wg.Done()
 		select {
 		case e.sem <- struct{}{}:
 		case <-e.stopCh:
 			return
 		}
-
 		defer func() { <-e.sem }()
-
-		e.mu.Lock()
-		if e.closed {
-			e.mu.Unlock()
-			return
-		}
-		e.wg.Add(1)
-		e.mu.Unlock()
-
-		defer e.wg.Done()
 		_ = handler(ctx, job)
 	}()
 }

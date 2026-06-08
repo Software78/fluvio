@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/software78/fluvio"
 	"github.com/software78/fluvio/internal/driver"
 )
@@ -75,10 +76,31 @@ func (d *Driver) AcquireConcurrencySlot(ctx context.Context, kind, partitionKey 
 }
 
 func (d *Driver) ReleaseConcurrencySlot(ctx context.Context, kind, partitionKey string) error {
+	_, err := d.pool.Exec(ctx, releaseConcurrencySlotSQL, kind, partitionKey)
+	return err
+}
+
+const releaseConcurrencySlotSQL = `
+	UPDATE fluvio_concurrency_slots
+	SET running = GREATEST(running - 1, 0)
+	WHERE kind = $1 AND partition_key = $2
+`
+
+func (d *Driver) releaseConcurrencySlotTx(ctx context.Context, tx pgx.Tx, kind, partitionKey string) error {
+	_, err := tx.Exec(ctx, releaseConcurrencySlotSQL, kind, partitionKey)
+	return err
+}
+
+func (d *Driver) releaseConcurrencySlotIfHeld(ctx context.Context, tx pgx.Tx, kind string, slotKey *string, skipRelease bool) error {
+	if skipRelease || slotKey == nil {
+		return nil
+	}
+	return d.releaseConcurrencySlotTx(ctx, tx, kind, *slotKey)
+}
+
+func (d *Driver) SetConcurrencySlotKey(ctx context.Context, jobID int64, partitionKey string) error {
 	_, err := d.pool.Exec(ctx, `
-		UPDATE fluvio_concurrency_slots
-		SET running = GREATEST(running - 1, 0)
-		WHERE kind = $1 AND partition_key = $2
-	`, kind, partitionKey)
+		UPDATE fluvio_jobs SET concurrency_slot_key = $2 WHERE id = $1 AND state = 'running'
+	`, jobID, partitionKey)
 	return err
 }

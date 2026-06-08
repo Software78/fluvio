@@ -22,11 +22,7 @@ func (WorkerDefaults[T]) Timeout() time.Duration { return 0 }
 // Attempt is the number of attempts made including the current one
 // (incremented by Fetch before the worker runs).
 func (WorkerDefaults[T]) NextAttempt(job *Job[T], _ error) time.Duration {
-	base := time.Duration(math.Pow(4, float64(job.Attempt))) * time.Second
-	if base > 24*time.Hour {
-		base = 24 * time.Hour
-	}
-	return base
+	return DefaultRetryDelay(job.Attempt, 24*time.Hour)
 }
 
 type timeoutWorker[T JobArgs] interface {

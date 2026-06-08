@@ -1,0 +1,2 @@
+ALTER TABLE fluvio_dead_jobs
+  ADD COLUMN IF NOT EXISTS encrypted BOOLEAN NOT NULL DEFAULT false;

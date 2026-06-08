@@ -32,7 +32,7 @@ func (m *mockDriver) TryAcquireLeader(context.Context) (bool, error) {
 	return true, nil
 }
 
-func (m *mockDriver) RenewLeader(context.Context) error {
+func (m *mockDriver) VerifyLeader(context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.renewCalls++
@@ -122,6 +122,7 @@ func (m *mockDriver) AcquireConcurrencySlot(context.Context, string, string) (bo
 	return true, nil
 }
 func (m *mockDriver) ReleaseConcurrencySlot(context.Context, string, string) error { return nil }
+func (m *mockDriver) SetConcurrencySlotKey(context.Context, int64, string) error   { return nil }
 func (m *mockDriver) CreateWorkflow(context.Context, *driver.WorkflowRecord) error { return nil }
 func (m *mockDriver) CompleteWorkflowTask(context.Context, driver.Tx, string, string) error {
 	return nil

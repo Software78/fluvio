@@ -2,14 +2,17 @@ package postgres
 
 const fetchJobsSQL = `
 WITH candidates AS (
-  SELECT id
-  FROM fluvio_jobs
-  WHERE state = 'pending'
-    AND scheduled_at <= now()
-    AND queue = ANY($1::text[])
-  ORDER BY priority ASC, scheduled_at ASC
+  SELECT j.id
+  FROM fluvio_jobs j
+  LEFT JOIN fluvio_concurrency_slots cs
+    ON cs.kind = j.kind AND cs.partition_key = ''
+  WHERE j.state = 'pending'
+    AND j.scheduled_at <= now()
+    AND j.queue = ANY($1::text[])
+    AND (cs.max_concurrent IS NULL OR cs.running < cs.max_concurrent)
+  ORDER BY j.priority ASC, j.scheduled_at ASC
   LIMIT $2
-  FOR UPDATE SKIP LOCKED
+  FOR UPDATE OF j SKIP LOCKED
 )
 UPDATE fluvio_jobs
 SET

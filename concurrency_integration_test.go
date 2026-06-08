@@ -4,8 +4,10 @@ package fluvio_test
 
 import (
 	"context"
-	"testing"
+	"fmt"
+	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,6 +15,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	fluvio "github.com/software78/fluvio"
+	"github.com/software78/fluvio/internal/driver"
 	"github.com/software78/fluvio/postgres"
 )
 
@@ -114,4 +117,72 @@ func TestConcurrencyLimitPeak(t *testing.T) {
 
 	require.LessOrEqual(t, int(sw.peakConcurrent.Load()), 2,
 		"peak concurrent slow_job executions must not exceed limit")
+}
+
+func TestConcurrentFetchNoConcurrencyOvershoot(t *testing.T) {
+	pool, client, _ := setupConcurrencyIntegration(t)
+	ctx := context.Background()
+
+	d := postgres.New(pool, postgres.Config{})
+	require.NoError(t, d.SetConcurrencyLimit(ctx, driver.ConcurrencyLimit{
+		Kind:          "slow_job",
+		MaxConcurrent: 2,
+	}))
+
+	for i := 0; i < 10; i++ {
+		_, err := client.Enqueue(ctx, SlowJobArgs{})
+		require.NoError(t, err)
+	}
+
+	for i := 0; i < 2; i++ {
+		jobs, err := d.Fetch(ctx, []string{fluvio.QueueDefault}, "pre-fill", 1)
+		require.NoError(t, err)
+		require.Len(t, jobs, 1)
+	}
+
+	var peakRunning atomic.Int32
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				var count int
+				err := pool.QueryRow(ctx, `
+					SELECT COUNT(*) FROM fluvio_jobs
+					WHERE kind = 'slow_job' AND state = 'running'
+				`).Scan(&count)
+				if err == nil {
+					for {
+						old := peakRunning.Load()
+						if int32(count) <= old {
+							break
+						}
+						if peakRunning.CompareAndSwap(old, int32(count)) {
+							break
+						}
+					}
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				_, err := d.Fetch(ctx, []string{fluvio.QueueDefault}, fmt.Sprintf("w-%d", id), 5)
+				require.NoError(t, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(stop)
+
+	require.LessOrEqual(t, int(peakRunning.Load()), 2,
+		"peak running slow_job count must not exceed concurrency limit during concurrent fetch")
 }

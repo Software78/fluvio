@@ -4,6 +4,7 @@ package postgres_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/software78/fluvio"
 	"github.com/software78/fluvio/internal/driver"
 	"github.com/software78/fluvio/internal/driver/postgres"
+	"github.com/software78/fluvio/migrations"
 )
 
 func setupPostgres(t *testing.T) (*pgxpool.Pool, *postgres.Driver) {
@@ -42,23 +44,45 @@ func setupPostgres(t *testing.T) (*pgxpool.Pool, *postgres.Driver) {
 	return pool, d
 }
 
+// countPostgresUpMigrations returns the number of up (.sql, not .down.sql) migration
+// files embedded under migrations/postgres. Migration numbers 006, 007, and 009 are
+// intentionally skipped and have no files, so they are not counted; see
+// migrations/postgres/README.md.
+func countPostgresUpMigrations(t *testing.T) int {
+	t.Helper()
+	entries, err := migrations.Postgres.ReadDir(migrations.PostgresDir)
+	require.NoError(t, err)
+	n := 0
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasSuffix(name, ".down.sql") {
+			continue
+		}
+		if strings.HasSuffix(name, ".sql") {
+			n++
+		}
+	}
+	return n
+}
+
 func TestMigrateUpDownStatus(t *testing.T) {
 	_, d := setupPostgres(t)
 	ctx := context.Background()
+	expected := countPostgresUpMigrations(t)
 
 	status, err := d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 12)
+	require.Len(t, status, expected)
 
 	require.NoError(t, d.MigrateDown(ctx, 1))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 11)
+	require.Len(t, status, expected-1)
 
 	require.NoError(t, d.Migrate(ctx))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 12)
+	require.Len(t, status, expected)
 }
 
 func TestEnqueueFetchAck(t *testing.T) {

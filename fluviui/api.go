@@ -219,8 +219,10 @@ func sseHandler(client apiClient) http.Handler {
 		w.Header().Set("Connection", "keep-alive")
 
 		ctx := r.Context()
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
+		statsTicker := time.NewTicker(5 * time.Second)
+		keepaliveTicker := time.NewTicker(15 * time.Second)
+		defer statsTicker.Stop()
+		defer keepaliveTicker.Stop()
 
 		writeEvent := func() {
 			stats, err := listQueuesView(ctx, client)
@@ -237,8 +239,11 @@ func sseHandler(client apiClient) http.Handler {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-statsTicker.C:
 				writeEvent()
+			case <-keepaliveTicker.C:
+				fmt.Fprintf(w, ": keepalive\n\n")
+				flusher.Flush()
 			}
 		}
 	})

@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -254,4 +256,38 @@ func TestCORSOnSSEEndpoint(t *testing.T) {
 
 	require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
 	cancel()
+}
+
+func TestSSEStreamKeepalive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("keepalive ticker is 15s")
+	}
+
+	h := handlerFor(mockClient{})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/fluvio/api/events", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(resp.Body)
+		done <- b
+	}()
+
+	time.Sleep(16 * time.Second)
+	cancel()
+
+	body := string(<-done)
+	require.GreaterOrEqual(t, strings.Count(body, "event: stats"), 2)
+	require.Contains(t, body, ": keepalive")
 }

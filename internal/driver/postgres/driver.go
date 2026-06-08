@@ -284,9 +284,16 @@ func (d *Driver) Ack(ctx context.Context, jobID int64) error {
 	var workflowID, workflowTaskID *string
 	var slotKey *string
 	err = tx.QueryRow(ctx, `
-		SELECT kind, workflow_id, workflow_task_id, concurrency_slot_key
-		FROM fluvio_jobs WHERE id = $1 AND state = 'running'
-		FOR UPDATE
+		WITH old AS (
+			SELECT kind, workflow_id, workflow_task_id, concurrency_slot_key
+			FROM fluvio_jobs WHERE id = $1 AND state = 'running'
+			FOR UPDATE
+		)
+		UPDATE fluvio_jobs j
+		SET state = 'completed', finalized_at = now(), concurrency_slot_key = NULL
+		FROM old
+		WHERE j.id = $1
+		RETURNING old.kind, old.workflow_id, old.workflow_task_id, old.concurrency_slot_key
 	`, jobID).Scan(&kind, &workflowID, &workflowTaskID, &slotKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -297,18 +304,6 @@ func (d *Driver) Ack(ctx context.Context, jobID int64) error {
 
 	if err := d.releaseConcurrencySlotIfHeld(ctx, tx, kind, slotKey, false); err != nil {
 		return err
-	}
-
-	tag, err := tx.Exec(ctx, `
-		UPDATE fluvio_jobs
-		SET state = 'completed', finalized_at = now(), concurrency_slot_key = NULL
-		WHERE id = $1 AND state = 'running'
-	`, jobID)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return fluvio.ErrJobNotFound
 	}
 
 	if workflowID != nil && workflowTaskID != nil {

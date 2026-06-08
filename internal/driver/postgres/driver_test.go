@@ -354,7 +354,7 @@ func TestPeriodicJobs(t *testing.T) {
 	require.Equal(t, int16(3), jobs[0].MaxAttempts)
 	require.JSONEq(t, `{"format":"pdf"}`, string(jobs[0].Args))
 	require.False(t, jobs[0].Paused)
-	require.Equal(t, nextRun, jobs[0].NextRunAt)
+	require.True(t, jobs[0].NextRunAt.Equal(nextRun))
 
 	updatedNextRun := time.Date(2030, 2, 1, 10, 0, 0, 0, time.UTC)
 	require.NoError(t, d.UpsertPeriodicJob(ctx, "daily-report", "0 10 * * *", "critical", 5, []byte(`{"format":"csv"}`), updatedNextRun))
@@ -363,7 +363,7 @@ func TestPeriodicJobs(t *testing.T) {
 	require.Equal(t, "0 10 * * *", jobs[0].Cron)
 	require.Equal(t, "critical", jobs[0].Queue)
 	require.Equal(t, int16(5), jobs[0].MaxAttempts)
-	require.Equal(t, updatedNextRun, jobs[0].NextRunAt)
+	require.True(t, jobs[0].NextRunAt.Equal(updatedNextRun))
 
 	require.NoError(t, d.PausePeriodicJob(ctx, "daily-report"))
 	jobs, err = d.ListPeriodicJobs(ctx)

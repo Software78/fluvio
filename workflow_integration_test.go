@@ -49,6 +49,7 @@ func setupWorkflowIntegration(t *testing.T) (*pgxpool.Pool, *fluvio.Client, driv
 	workers := fluvio.NewWorkers()
 	fluvio.AddWorker(workers, &wfTaskWorker{})
 	fluvio.AddWorker(workers, wfFailWorker{})
+	fluvio.AddWorker(workers, wfSlowWorker{})
 
 	client, err := fluvio.NewClient(d, &fluvio.Config{
 		Queues: map[string]fluvio.QueueConfig{
@@ -75,6 +76,23 @@ type wfFailWorker struct{ fluvio.WorkerDefaults[wfFailArgs] }
 
 func (wfFailWorker) Work(ctx context.Context, job *fluvio.Job[wfFailArgs]) error {
 	return context.Canceled
+}
+
+type wfSlowArgs struct {
+	Task string `json:"task"`
+}
+
+func (wfSlowArgs) Kind() string { return "wf-slow" }
+
+type wfSlowWorker struct{ fluvio.WorkerDefaults[wfSlowArgs] }
+
+func (wfSlowWorker) Work(ctx context.Context, _ *fluvio.Job[wfSlowArgs]) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(5 * time.Second):
+		return nil
+	}
 }
 
 func taskState(wf *driver.WorkflowState, taskID string) string {
@@ -185,7 +203,7 @@ func TestWorkflowFailCancelsParallelSiblings(t *testing.T) {
 
 	wf := fluvio.NewWorkflow().
 		Task("A", wfFailArgs{}, fluvio.WithTaskEnqueueOptions(fluvio.WithMaxAttempts(1))).
-		Task("B", wfTaskArgs{Task: "B"})
+		Task("B", wfSlowArgs{Task: "B"})
 
 	wfID, err := client.EnqueueWorkflow(ctx, wf)
 	require.NoError(t, err)

@@ -9,8 +9,6 @@ import (
 // Embed it in test mocks and override only the methods under test.
 type NoopDriver struct{}
 
-var _ Driver = NoopDriver{}
-
 func (NoopDriver) Enqueue(context.Context, EnqueueParams) (*Job, error) {
 	return nil, nil
 }
@@ -146,11 +144,11 @@ func (NoopDriver) SetConcurrencyLimit(context.Context, ConcurrencyLimit) error {
 func (NoopDriver) RegisterConcurrencyLimit(string, int, bool) {}
 
 func (NoopDriver) AcquireConcurrencySlot(context.Context, string, string) (bool, error) {
-	return false, nil
+	return true, nil
 }
 
 func (NoopDriver) AcquireConcurrencySlotForJob(context.Context, int64, string, string) (bool, error) {
-	return false, nil
+	return true, nil
 }
 
 func (NoopDriver) ReleaseConcurrencySlot(context.Context, string, string) error {
@@ -180,3 +178,5 @@ func (NoopDriver) GetWorkflow(context.Context, string) (*WorkflowState, error) {
 func (NoopDriver) ListWorkflows(context.Context, int, int) ([]*WorkflowState, error) {
 	return nil, nil
 }
+
+var _ Driver = NoopDriver{}

@@ -255,6 +255,10 @@ func (d *Driver) listUpMigrations() ([]string, error) {
 	return versions, nil
 }
 
+// validateMigrationSequence checks that migration numeric prefixes are unique
+// and strictly increasing. Gaps in the sequence are allowed — numbers 006, 007,
+// and 009 were reserved but never shipped. Do not reuse skipped numbers; the
+// lexicographic sort order must match the numeric apply order.
 func validateMigrationSequence(versions []string) error {
 	seen := make(map[int]string, len(versions))
 	var nums []int

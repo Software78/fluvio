@@ -1,6 +1,7 @@
 package fluviui
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -256,6 +257,35 @@ func TestCORSOnSSEEndpoint(t *testing.T) {
 
 	require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
 	cancel()
+}
+
+func TestSSEFirstEventIsStats(t *testing.T) {
+	h := handlerFor(mockClient{})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/fluvio/api/events", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+
+	scanner := bufio.NewScanner(resp.Body)
+	var lines []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		lines = append(lines, line)
+		if len(lines) >= 2 {
+			break
+		}
+	}
+	require.GreaterOrEqual(t, len(lines), 1)
+	require.Equal(t, "event: stats", lines[0])
 }
 
 func TestSSEStreamKeepalive(t *testing.T) {

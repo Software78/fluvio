@@ -169,6 +169,9 @@ func (d *recordingDriver) SetConcurrencyLimit(context.Context, driver.Concurrenc
 func (d *recordingDriver) AcquireConcurrencySlot(context.Context, string, string) (bool, error) {
 	return true, nil
 }
+func (d *recordingDriver) AcquireConcurrencySlotForJob(context.Context, int64, string, string) (bool, error) {
+	return true, nil
+}
 func (d *recordingDriver) ReleaseConcurrencySlot(context.Context, string, string) error { return nil }
 func (d *recordingDriver) SetConcurrencySlotKey(context.Context, int64, string) error   { return nil }
 func (d *recordingDriver) CreateWorkflow(context.Context, *driver.WorkflowRecord) error { return nil }

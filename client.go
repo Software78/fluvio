@@ -585,16 +585,12 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 	// Partitioned limits acquire here; global limits acquire in driver Fetch. All releases in Ack/Nack.
 	if fn := c.partitionKeyFn(dJob.Kind); fn != nil {
 		partitionKey := fn(args)
-		acquired, err := c.driver.AcquireConcurrencySlot(ctx, dJob.Kind, partitionKey)
+		acquired, err := c.driver.AcquireConcurrencySlotForJob(ctx, dJob.ID, dJob.Kind, partitionKey)
 		if err != nil {
 			return err
 		}
 		if !acquired {
 			return c.nackJob(ctx, dJob, ErrConcurrencySlotUnavailable, time.Now().Add(5*time.Second))
-		}
-		if err := c.driver.SetConcurrencySlotKey(ctx, dJob.ID, partitionKey); err != nil {
-			_ = c.driver.ReleaseConcurrencySlot(ctx, dJob.Kind, partitionKey)
-			return c.nackJob(ctx, dJob, err, time.Now().Add(5*time.Second))
 		}
 	}
 

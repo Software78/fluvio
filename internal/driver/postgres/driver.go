@@ -232,7 +232,7 @@ func (d *Driver) Fetch(ctx context.Context, queues []string, workerID string, ma
 			out = append(out, job)
 			continue
 		}
-		acquired, err := d.AcquireConcurrencySlot(ctx, job.Kind, "")
+		acquired, err := d.AcquireConcurrencySlotForJob(ctx, job.ID, job.Kind, "")
 		if err != nil {
 			return nil, err
 		}
@@ -241,12 +241,6 @@ func (d *Driver) Fetch(ctx context.Context, queues []string, workerID string, ma
 				return nil, fmt.Errorf("nack job %d after concurrency slot unavailable: %w", job.ID, err)
 			}
 			continue
-		}
-		if _, err := d.pool.Exec(ctx, `
-			UPDATE fluvio_jobs SET concurrency_slot_key = '' WHERE id = $1 AND state = 'running'
-		`, job.ID); err != nil {
-			_ = d.ReleaseConcurrencySlot(ctx, job.Kind, "")
-			return nil, err
 		}
 		key := ""
 		job.ConcurrencySlotKey = &key

@@ -50,9 +50,9 @@ func (d *Driver) SetConcurrencyLimit(ctx context.Context, limit driver.Concurren
 	return nil
 }
 
-func (d *Driver) AcquireConcurrencySlot(ctx context.Context, kind, partitionKey string) (bool, error) {
+func (d *Driver) acquireConcurrencySlot(ctx context.Context, q pgxQuerier, kind, partitionKey string) (bool, error) {
 	if partitionKey != "" {
-		_, err := d.pool.Exec(ctx, `
+		_, err := q.Exec(ctx, `
 			INSERT INTO fluvio_concurrency_slots (kind, partition_key, running, max_concurrent)
 			SELECT $1, $2, 0, max_concurrent
 			FROM fluvio_concurrency_slots
@@ -64,7 +64,7 @@ func (d *Driver) AcquireConcurrencySlot(ctx context.Context, kind, partitionKey 
 		}
 	}
 
-	tag, err := d.pool.Exec(ctx, `
+	tag, err := q.Exec(ctx, `
 		UPDATE fluvio_concurrency_slots
 		SET running = running + 1
 		WHERE kind = $1 AND partition_key = $2 AND running < max_concurrent
@@ -73,6 +73,39 @@ func (d *Driver) AcquireConcurrencySlot(ctx context.Context, kind, partitionKey 
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+func (d *Driver) AcquireConcurrencySlot(ctx context.Context, kind, partitionKey string) (bool, error) {
+	return d.acquireConcurrencySlot(ctx, d.pool, kind, partitionKey)
+}
+
+func (d *Driver) setConcurrencySlotKey(ctx context.Context, q pgxQuerier, jobID int64, partitionKey string) error {
+	_, err := q.Exec(ctx, `
+		UPDATE fluvio_jobs SET concurrency_slot_key = $2 WHERE id = $1 AND state = 'running'
+	`, jobID, partitionKey)
+	return err
+}
+
+// AcquireConcurrencySlotForJob atomically increments the slot counter and records the
+// held key on the job row so a crash rolls back both changes together.
+func (d *Driver) AcquireConcurrencySlotForJob(ctx context.Context, jobID int64, kind, partitionKey string) (bool, error) {
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	acquired, err := d.acquireConcurrencySlot(ctx, tx, kind, partitionKey)
+	if err != nil || !acquired {
+		return acquired, err
+	}
+	if err := d.setConcurrencySlotKey(ctx, tx, jobID, partitionKey); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (d *Driver) ReleaseConcurrencySlot(ctx context.Context, kind, partitionKey string) error {
@@ -99,8 +132,5 @@ func (d *Driver) releaseConcurrencySlotIfHeld(ctx context.Context, tx pgx.Tx, ki
 }
 
 func (d *Driver) SetConcurrencySlotKey(ctx context.Context, jobID int64, partitionKey string) error {
-	_, err := d.pool.Exec(ctx, `
-		UPDATE fluvio_jobs SET concurrency_slot_key = $2 WHERE id = $1 AND state = 'running'
-	`, jobID, partitionKey)
-	return err
+	return d.setConcurrencySlotKey(ctx, d.pool, jobID, partitionKey)
 }

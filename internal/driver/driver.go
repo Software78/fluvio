@@ -133,6 +133,7 @@ type Driver interface {
 
 	SetConcurrencyLimit(ctx context.Context, limit ConcurrencyLimit) error
 	AcquireConcurrencySlot(ctx context.Context, kind, partitionKey string) (acquired bool, err error)
+	AcquireConcurrencySlotForJob(ctx context.Context, jobID int64, kind, partitionKey string) (acquired bool, err error)
 	ReleaseConcurrencySlot(ctx context.Context, kind, partitionKey string) error
 	SetConcurrencySlotKey(ctx context.Context, jobID int64, partitionKey string) error
 

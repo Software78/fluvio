@@ -100,6 +100,9 @@ func (f *fakeDriver) SetConcurrencyLimit(context.Context, driver.ConcurrencyLimi
 func (f *fakeDriver) AcquireConcurrencySlot(context.Context, string, string) (bool, error) {
 	return true, nil
 }
+func (f *fakeDriver) AcquireConcurrencySlotForJob(context.Context, int64, string, string) (bool, error) {
+	return true, nil
+}
 func (f *fakeDriver) ReleaseConcurrencySlot(context.Context, string, string) error { return nil }
 func (f *fakeDriver) SetConcurrencySlotKey(context.Context, int64, string) error   { return nil }
 func (f *fakeDriver) CreateWorkflow(context.Context, *driver.WorkflowRecord) error { return nil }

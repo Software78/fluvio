@@ -85,6 +85,9 @@ func (d *reaperDriver) SetConcurrencyLimit(context.Context, driver.ConcurrencyLi
 func (d *reaperDriver) AcquireConcurrencySlot(context.Context, string, string) (bool, error) {
 	return true, nil
 }
+func (d *reaperDriver) AcquireConcurrencySlotForJob(context.Context, int64, string, string) (bool, error) {
+	return true, nil
+}
 func (d *reaperDriver) ReleaseConcurrencySlot(context.Context, string, string) error { return nil }
 func (d *reaperDriver) SetConcurrencySlotKey(context.Context, int64, string) error   { return nil }
 func (d *reaperDriver) CreateWorkflow(context.Context, *driver.WorkflowRecord) error { return nil }

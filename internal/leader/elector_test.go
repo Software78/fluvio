@@ -121,6 +121,9 @@ func (m *mockDriver) SetConcurrencyLimit(context.Context, driver.ConcurrencyLimi
 func (m *mockDriver) AcquireConcurrencySlot(context.Context, string, string) (bool, error) {
 	return true, nil
 }
+func (m *mockDriver) AcquireConcurrencySlotForJob(context.Context, int64, string, string) (bool, error) {
+	return true, nil
+}
 func (m *mockDriver) ReleaseConcurrencySlot(context.Context, string, string) error { return nil }
 func (m *mockDriver) SetConcurrencySlotKey(context.Context, int64, string) error   { return nil }
 func (m *mockDriver) CreateWorkflow(context.Context, *driver.WorkflowRecord) error { return nil }

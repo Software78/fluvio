@@ -18,6 +18,32 @@ import (
 	"github.com/software78/fluvio/migrations"
 )
 
+func setupPostgresBench(b *testing.B) (*pgxpool.Pool, *postgres.Driver) {
+	b.Helper()
+	ctx := context.Background()
+
+	container, err := tcpostgres.Run(ctx,
+		"postgres:16-alpine",
+		tcpostgres.WithDatabase("fluvio"),
+		tcpostgres.WithUsername("fluvio"),
+		tcpostgres.WithPassword("fluvio"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	require.NoError(b, err)
+	b.Cleanup(func() { _ = container.Terminate(ctx) })
+
+	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(b, err)
+
+	pool, err := pgxpool.New(ctx, connStr)
+	require.NoError(b, err)
+	b.Cleanup(func() { pool.Close() })
+
+	d := postgres.New(pool, postgres.Config{})
+	require.NoError(b, d.Migrate(ctx))
+	return pool, d
+}
+
 func setupPostgres(t *testing.T) (*pgxpool.Pool, *postgres.Driver) {
 	t.Helper()
 	ctx := context.Background()
@@ -247,6 +273,37 @@ func TestEnqueueMany(t *testing.T) {
 	jobs, err := d.EnqueueMany(ctx, params)
 	require.NoError(t, err)
 	require.Len(t, jobs, 100)
+}
+
+func BenchmarkEnqueueMany(b *testing.B) {
+	pool, d := setupPostgresBench(b)
+	ctx := context.Background()
+
+	const n = 1000
+	params := make([]driver.EnqueueParams, n)
+	for i := range params {
+		params[i] = driver.EnqueueParams{Kind: "bulk_bench", Args: []byte(`{}`)}
+	}
+
+	b.Run("CopyFrom", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, err := d.EnqueueMany(ctx, params)
+			require.NoError(b, err)
+			_, err = pool.Exec(ctx, `DELETE FROM fluvio_jobs`)
+			require.NoError(b, err)
+		}
+	})
+
+	b.Run("InsertLoop", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_, err := d.EnqueueManyLoop(ctx, params)
+			require.NoError(b, err)
+			_, err = pool.Exec(ctx, `DELETE FROM fluvio_jobs`)
+			require.NoError(b, err)
+		}
+	})
 }
 
 func TestPollOnlySubscribeDisabled(t *testing.T) {

@@ -896,7 +896,47 @@ func (d *Driver) ListWorkers(ctx context.Context, staleAfter time.Duration) ([]*
 	return workers, rows.Err()
 }
 
-func (d *Driver) EnqueueMany(ctx context.Context, params []driver.EnqueueParams) ([]*driver.Job, error) {
+var enqueueManyColumns = []string{
+	"queue", "kind", "args", "state", "priority", "max_attempts",
+	"scheduled_at", "unique_key", "tags", "metadata",
+	"workflow_id", "workflow_task_id", "encrypted",
+}
+
+func ensureJobStateType(ctx context.Context, conn *pgx.Conn) error {
+	t, err := conn.LoadType(ctx, "fluvio_job_state")
+	if err != nil {
+		return err
+	}
+	conn.TypeMap().RegisterType(t)
+	return nil
+}
+
+func enqueueScheduledAt(p driver.EnqueueParams) time.Time {
+	scheduledAt := time.Now().UTC()
+	if p.ScheduledAt != nil {
+		scheduledAt = *p.ScheduledAt
+	}
+	return scheduledAt
+}
+
+func buildEnqueueManyCopyRows(normalized []driver.EnqueueParams) ([][]any, []string) {
+	rows := make([][]any, len(normalized))
+	var pendingQueues []string
+	for i, p := range normalized {
+		state := initialState(p)
+		rows[i] = []any{
+			p.Queue, p.Kind, p.Args, state, p.Priority, p.MaxAttempts,
+			enqueueScheduledAt(p), p.UniqueKey, p.Tags, p.Metadata,
+			p.WorkflowID, p.WorkflowTaskID, p.Encrypted,
+		}
+		if state == "pending" {
+			pendingQueues = append(pendingQueues, p.Queue)
+		}
+	}
+	return rows, pendingQueues
+}
+
+func (d *Driver) enqueueManyLoop(ctx context.Context, params []driver.EnqueueParams) ([]*driver.Job, error) {
 	if len(params) == 0 {
 		return nil, nil
 	}
@@ -919,6 +959,78 @@ func (d *Driver) EnqueueMany(ctx context.Context, params []driver.EnqueueParams)
 		}
 		jobs = append(jobs, job)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+func (d *Driver) EnqueueMany(ctx context.Context, params []driver.EnqueueParams) ([]*driver.Job, error) {
+	if len(params) == 0 {
+		return nil, nil
+	}
+
+	normalized := make([]driver.EnqueueParams, len(params))
+	for i, p := range params {
+		var err error
+		normalized[i], err = normalizeEnqueueParams(p)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	rows, pendingQueues := buildEnqueueManyCopyRows(normalized)
+
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`); err != nil {
+		return nil, err
+	}
+
+	if err := ensureJobStateType(ctx, tx.Conn()); err != nil {
+		return nil, err
+	}
+
+	var maxID int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(id), 0) FROM fluvio_jobs`).Scan(&maxID); err != nil {
+		return nil, err
+	}
+
+	n, err := tx.CopyFrom(ctx, pgx.Identifier{"fluvio_jobs"}, enqueueManyColumns, pgx.CopyFromRows(rows))
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, fluvio.ErrUniqueConflict
+		}
+		return nil, err
+	}
+	if n != int64(len(params)) {
+		return nil, fmt.Errorf("fluvio/postgres: copy inserted %d rows, expected %d", n, len(params))
+	}
+
+	resultRows, err := tx.Query(ctx, `SELECT `+jobColumns+` FROM fluvio_jobs WHERE id > $1 ORDER BY id ASC`, maxID)
+	if err != nil {
+		return nil, err
+	}
+	defer resultRows.Close()
+
+	jobs, err := scanJobs(resultRows)
+	if err != nil {
+		return nil, err
+	}
+	if len(jobs) != len(params) {
+		return nil, fmt.Errorf("fluvio/postgres: fetched %d jobs, expected %d", len(jobs), len(params))
+	}
+
+	if len(pendingQueues) > 0 {
+		if err := d.maybeNotifyQueues(ctx, tx, pendingQueues); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}

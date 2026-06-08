@@ -23,9 +23,12 @@ type Job struct {
 	FinalizedAt *time.Time
 	CreatedAt   time.Time
 	ErrorTrace  []byte
-	Tags        []string
-	UniqueKey   *string
-	Metadata    []byte
+	Tags           []string
+	UniqueKey      *string
+	Metadata       []byte
+	WorkflowID     *string
+	WorkflowTaskID *string
+	Encrypted      bool
 }
 
 type EnqueueParams struct {
@@ -35,9 +38,12 @@ type EnqueueParams struct {
 	Priority    int16
 	MaxAttempts int16
 	ScheduledAt *time.Time
-	UniqueKey   *string
-	Tags        []string
-	Metadata    []byte
+	UniqueKey      *string
+	Tags           []string
+	Metadata       []byte
+	WorkflowID     *string
+	WorkflowTaskID *string
+	Encrypted      bool
 }
 
 type QueueStats struct {
@@ -81,8 +87,23 @@ type Driver interface {
 	Cancel(ctx context.Context, jobID int64) error
 	GetJob(ctx context.Context, jobID int64) (*Job, error)
 	ListJobs(ctx context.Context, p ListJobsParams) ([]*Job, error)
+	ListDead(ctx context.Context, limit, offset int) ([]*Job, error)
+	ReplayDead(ctx context.Context, jobID int64) error
+	PurgeDead(ctx context.Context, before time.Time) (int64, error)
 
 	TickScheduled(ctx context.Context, now time.Time) (int64, error)
+
+	UpsertPeriodicJob(ctx context.Context, kind, cron, queue string, maxAttempts int16, args []byte) error
+	DuePeriodicJobs(ctx context.Context, now time.Time) ([]*PeriodicJob, error)
+	UpdatePeriodicJobNextRun(ctx context.Context, kind string, nextRun time.Time) error
+	UpdatePeriodicJobNextRunTx(ctx context.Context, tx Tx, kind string, nextRun time.Time) (bool, error)
+	ListPeriodicJobs(ctx context.Context) ([]*PeriodicJob, error)
+	PausePeriodicJob(ctx context.Context, kind string) error
+	ResumePeriodicJob(ctx context.Context, kind string) error
+
+	BeginTx(ctx context.Context) (Tx, error)
+	CommitTx(ctx context.Context, tx Tx) error
+	RollbackTx(ctx context.Context, tx Tx) error
 
 	UniqueJobExists(ctx context.Context, uniqueKey string) (bool, error)
 
@@ -106,4 +127,14 @@ type Driver interface {
 	MigrateDown(ctx context.Context, steps int) error
 	MigrationStatus(ctx context.Context) ([]string, error)
 	Close() error
+
+	SetConcurrencyLimit(ctx context.Context, limit ConcurrencyLimit) error
+	AcquireConcurrencySlot(ctx context.Context, kind, partitionKey string) (acquired bool, err error)
+	ReleaseConcurrencySlot(ctx context.Context, kind, partitionKey string) error
+
+	CreateWorkflow(ctx context.Context, w *WorkflowRecord) error
+	CompleteWorkflowTask(ctx context.Context, tx Tx, workflowID, taskID string) error
+	FailWorkflowTask(ctx context.Context, workflowID, taskID string) error
+	GetWorkflow(ctx context.Context, workflowID string) (*WorkflowState, error)
+	ListWorkflows(ctx context.Context, limit, offset int) ([]*WorkflowState, error)
 }

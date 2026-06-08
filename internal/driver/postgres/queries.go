@@ -20,5 +20,5 @@ SET
 WHERE id IN (SELECT id FROM candidates)
 RETURNING id, queue, kind, args, state, priority, attempt, max_attempts,
   attempted_by, scheduled_at, attempted_at, finalized_at, created_at,
-  error_trace, tags, unique_key, metadata
+  error_trace, tags, unique_key, metadata, workflow_id, workflow_task_id, encrypted
 `

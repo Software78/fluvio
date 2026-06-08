@@ -21,6 +21,11 @@ type Config struct {
 
 const migrationLockID int64 = 0x666c7576696f6d // "fluviom"
 
+type concurrencyKindConfig struct {
+	maxConcurrent int
+	partitioned   bool
+}
+
 // Driver implements driver.Driver for PostgreSQL.
 // TryAcquireLeader, RenewLeader, and ReleaseLeader must not be called concurrently.
 type Driver struct {
@@ -30,6 +35,9 @@ type Driver struct {
 	useLease    bool
 	leaderID    string
 	leaseExpiry time.Time
+
+	concurrencyMu     sync.RWMutex
+	concurrencyLimits map[string]concurrencyKindConfig
 }
 
 // New creates a Postgres driver from a connection pool.

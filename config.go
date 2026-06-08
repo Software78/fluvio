@@ -22,6 +22,7 @@ type Config struct {
 	WorkerID                string
 	WorkerHeartbeatInterval time.Duration
 	WorkerTTL               time.Duration
+	KeyProvider             KeyProvider // if non-nil, encryption is available
 }
 
 type QueueConfig struct {
@@ -77,6 +78,7 @@ type enqueueOptions struct {
 	uniqueKey   *string
 	tags        []string
 	metadata    []byte
+	encrypted   bool
 }
 
 func WithQueue(queue string) EnqueueOption {
@@ -105,6 +107,12 @@ func WithTags(tags ...string) EnqueueOption {
 
 func WithMetadata(metadata []byte) EnqueueOption {
 	return func(o *enqueueOptions) { o.metadata = metadata }
+}
+
+// WithEncryption marks this enqueue as encrypted. Requires Config.KeyProvider;
+// returns ErrNoKeyProvider at enqueue time when no KeyProvider is configured.
+func WithEncryption() EnqueueOption {
+	return func(o *enqueueOptions) { o.encrypted = true }
 }
 
 func applyEnqueueOptions(opts []EnqueueOption) enqueueOptions {

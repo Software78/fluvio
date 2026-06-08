@@ -91,9 +91,10 @@ func TestClientLifecycle(t *testing.T) {
 		t.Fatal("timeout waiting for job")
 	}
 
-	job, err := client.GetJob(ctx, row.ID)
-	require.NoError(t, err)
-	require.Equal(t, fluvio.JobStateCompleted, job.State)
+	require.Eventually(t, func() bool {
+		job, err := client.GetJob(ctx, row.ID)
+		return err == nil && job.State == fluvio.JobStateCompleted
+	}, 5*time.Second, 50*time.Millisecond)
 }
 
 func TestWorkerVisibility(t *testing.T) {

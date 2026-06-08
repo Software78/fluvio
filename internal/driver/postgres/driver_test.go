@@ -48,17 +48,17 @@ func TestMigrateUpDownStatus(t *testing.T) {
 
 	status, err := d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 4)
+	require.Len(t, status, 9)
 
 	require.NoError(t, d.MigrateDown(ctx, 1))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 3)
+	require.Len(t, status, 8)
 
 	require.NoError(t, d.Migrate(ctx))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 4)
+	require.Len(t, status, 9)
 }
 
 func TestEnqueueFetchAck(t *testing.T) {
@@ -137,6 +137,15 @@ func TestNackRetryAndDead(t *testing.T) {
 	got, err := d.GetJob(ctx, job.ID)
 	require.NoError(t, err)
 	require.Equal(t, "dead", got.State)
+
+	var deadCount int
+	err = d.Pool().QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM fluvio_dead_jobs
+		WHERE id = $1
+	`, job.ID).Scan(&deadCount)
+	require.NoError(t, err)
+	require.Equal(t, 1, deadCount)
 }
 
 var errTest = testError{}
@@ -290,4 +299,70 @@ func TestWorkerRegistry(t *testing.T) {
 	require.Len(t, workers, 1)
 	require.Equal(t, firstSeen, workers[0].StartedAt)
 	require.Equal(t, 8, workers[0].Queues["default"])
+}
+
+func TestPeriodicJobs(t *testing.T) {
+	_, d := setupPostgres(t)
+	ctx := context.Background()
+
+	require.NoError(t, d.UpsertPeriodicJob(ctx, "daily-report", "0 9 * * *", "default", 3, []byte(`{"format":"pdf"}`)))
+
+	jobs, err := d.ListPeriodicJobs(ctx)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	require.Equal(t, "daily-report", jobs[0].Kind)
+	require.Equal(t, "0 9 * * *", jobs[0].Cron)
+	require.Equal(t, "default", jobs[0].Queue)
+	require.Equal(t, int16(3), jobs[0].MaxAttempts)
+	require.JSONEq(t, `{"format":"pdf"}`, string(jobs[0].Args))
+	require.False(t, jobs[0].Paused)
+
+	// Upsert updates cron/args without resetting next_run_at.
+	nextRun := jobs[0].NextRunAt
+	require.NoError(t, d.UpsertPeriodicJob(ctx, "daily-report", "0 10 * * *", "critical", 5, []byte(`{"format":"csv"}`)))
+	jobs, err = d.ListPeriodicJobs(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "0 10 * * *", jobs[0].Cron)
+	require.Equal(t, "critical", jobs[0].Queue)
+	require.Equal(t, int16(5), jobs[0].MaxAttempts)
+	require.Equal(t, nextRun, jobs[0].NextRunAt)
+
+	require.NoError(t, d.PausePeriodicJob(ctx, "daily-report"))
+	jobs, err = d.ListPeriodicJobs(ctx)
+	require.NoError(t, err)
+	require.True(t, jobs[0].Paused)
+
+	past := time.Now().Add(-time.Hour)
+	due, err := d.DuePeriodicJobs(ctx, time.Now())
+	require.NoError(t, err)
+	require.Empty(t, due)
+
+	require.NoError(t, d.ResumePeriodicJob(ctx, "daily-report"))
+	require.NoError(t, d.UpdatePeriodicJobNextRun(ctx, "daily-report", past))
+
+	due, err = d.DuePeriodicJobs(ctx, time.Now())
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Equal(t, "daily-report", due[0].Kind)
+
+	future := time.Now().Add(time.Hour)
+	tx, err := d.BeginTx(ctx)
+	require.NoError(t, err)
+	claimed, err := d.UpdatePeriodicJobNextRunTx(ctx, tx, "daily-report", future)
+	require.NoError(t, err)
+	require.True(t, claimed)
+	require.NoError(t, d.CommitTx(ctx, tx))
+
+	jobs, err = d.ListPeriodicJobs(ctx)
+	require.NoError(t, err)
+	require.True(t, jobs[0].NextRunAt.After(time.Now()))
+	require.NotNil(t, jobs[0].LastRunAt)
+
+	// Second claim should fail (next_run_at is in the future).
+	tx, err = d.BeginTx(ctx)
+	require.NoError(t, err)
+	claimed, err = d.UpdatePeriodicJobNextRunTx(ctx, tx, "daily-report", future)
+	require.NoError(t, err)
+	require.False(t, claimed)
+	require.NoError(t, d.RollbackTx(ctx, tx))
 }

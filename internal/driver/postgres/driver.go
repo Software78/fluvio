@@ -20,16 +20,18 @@ const leaderLockID int64 = 0x666c7576696f
 
 const jobColumns = `id, queue, kind, args, state, priority, attempt, max_attempts,
 	attempted_by, scheduled_at, attempted_at, finalized_at, created_at,
-	error_trace, tags, unique_key, metadata`
+	error_trace, tags, unique_key, metadata, workflow_id, workflow_task_id, encrypted`
+
+const deadJobColumns = `id, queue, kind, args, error_trace, metadata, tags, died_at`
 
 func scanJob(row pgx.Row) (*driver.Job, error) {
 	var j driver.Job
 	var args, metadata, errorTrace []byte
-	var uniqueKey *string
+	var uniqueKey, workflowID, workflowTaskID *string
 	err := row.Scan(
 		&j.ID, &j.Queue, &j.Kind, &args, &j.State, &j.Priority, &j.Attempt, &j.MaxAttempts,
 		&j.AttemptedBy, &j.ScheduledAt, &j.AttemptedAt, &j.FinalizedAt, &j.CreatedAt,
-		&errorTrace, &j.Tags, &uniqueKey, &metadata,
+		&errorTrace, &j.Tags, &uniqueKey, &metadata, &workflowID, &workflowTaskID, &j.Encrypted,
 	)
 	if err != nil {
 		return nil, err
@@ -38,6 +40,8 @@ func scanJob(row pgx.Row) (*driver.Job, error) {
 	j.Metadata = metadata
 	j.ErrorTrace = errorTrace
 	j.UniqueKey = uniqueKey
+	j.WorkflowID = workflowID
+	j.WorkflowTaskID = workflowTaskID
 	return &j, nil
 }
 
@@ -45,6 +49,37 @@ func scanJobs(rows pgx.Rows) ([]*driver.Job, error) {
 	var jobs []*driver.Job
 	for rows.Next() {
 		j, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func scanDeadJob(row pgx.Row) (*driver.Job, error) {
+	var j driver.Job
+	var args, metadata, errorTrace []byte
+	var diedAt time.Time
+	err := row.Scan(
+		&j.ID, &j.Queue, &j.Kind, &args, &errorTrace, &metadata, &j.Tags, &diedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	j.State = "dead"
+	j.Args = args
+	j.Metadata = metadata
+	j.ErrorTrace = errorTrace
+	j.CreatedAt = diedAt
+	j.FinalizedAt = &diedAt
+	return &j, nil
+}
+
+func scanDeadJobs(rows pgx.Rows) ([]*driver.Job, error) {
+	var jobs []*driver.Job
+	for rows.Next() {
+		j, err := scanDeadJob(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -133,11 +168,11 @@ func (d *Driver) enqueueWithQuerier(ctx context.Context, q pgxQuerier, p driver.
 	row := q.QueryRow(ctx, `
 		INSERT INTO fluvio_jobs (
 			queue, kind, args, state, priority, max_attempts,
-			scheduled_at, unique_key, tags, metadata
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			scheduled_at, unique_key, tags, metadata, workflow_id, workflow_task_id, encrypted
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING `+jobColumns,
 		p.Queue, p.Kind, p.Args, state, p.Priority, p.MaxAttempts,
-		scheduledAt, p.UniqueKey, p.Tags, p.Metadata,
+		scheduledAt, p.UniqueKey, p.Tags, p.Metadata, p.WorkflowID, p.WorkflowTaskID, p.Encrypted,
 	)
 	job, err := scanJob(row)
 	if err != nil {
@@ -176,7 +211,28 @@ func (d *Driver) Fetch(ctx context.Context, queues []string, workerID string, ma
 		return nil, err
 	}
 	defer rows.Close()
-	return scanJobs(rows)
+	jobs, err := scanJobs(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []*driver.Job
+	for _, job := range jobs {
+		if !d.isGlobalConcurrencyKind(job.Kind) {
+			out = append(out, job)
+			continue
+		}
+		acquired, err := d.AcquireConcurrencySlot(ctx, job.Kind, "")
+		if err != nil {
+			return nil, err
+		}
+		if !acquired {
+			_ = d.Nack(ctx, job.ID, fluvio.ErrConcurrencySlotUnavailable, time.Now().UTC().Add(5*time.Second))
+			continue
+		}
+		out = append(out, job)
+	}
+	return out, nil
 }
 
 func (d *Driver) filterPausedQueues(ctx context.Context, queues []string) ([]string, error) {
@@ -204,16 +260,41 @@ func (d *Driver) filterPausedQueues(ctx context.Context, queues []string) ([]str
 }
 
 func (d *Driver) Ack(ctx context.Context, jobID int64) error {
-	tag, err := d.pool.Exec(ctx, `
-		UPDATE fluvio_jobs
-		SET state = 'completed', finalized_at = now()
-		WHERE id = $1 AND state = 'running'
-	`, jobID)
+	tx, err := d.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return fluvio.ErrJobNotFound
+	defer tx.Rollback(ctx)
+
+	var kind string
+	var workflowID, workflowTaskID *string
+	err = tx.QueryRow(ctx, `
+		UPDATE fluvio_jobs
+		SET state = 'completed', finalized_at = now()
+		WHERE id = $1 AND state = 'running'
+		RETURNING kind, workflow_id, workflow_task_id
+	`, jobID).Scan(&kind, &workflowID, &workflowTaskID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fluvio.ErrJobNotFound
+		}
+		return err
+	}
+
+	if workflowID != nil && workflowTaskID != nil {
+		if err := d.completeWorkflowTaskTx(ctx, tx, *workflowID, *workflowTaskID); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	if d.isGlobalConcurrencyKind(kind) {
+		if err := d.ReleaseConcurrencySlot(ctx, kind, ""); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -231,13 +312,22 @@ func (d *Driver) Nack(ctx context.Context, jobID int64, jobErr error, nextAttemp
 	}
 	defer tx.Rollback(ctx)
 
+	var queue, kind string
+	var args, metadata []byte
+	var tags []string
 	var attempt, maxAttempts int16
 	var errorTrace []byte
+	var workflowID, workflowTaskID *string
 	err = tx.QueryRow(ctx, `
-		SELECT attempt, max_attempts, COALESCE(error_trace, '[]'::jsonb)
+		SELECT queue, kind, args, attempt, max_attempts,
+			COALESCE(error_trace, '[]'::jsonb),
+			metadata, tags, workflow_id, workflow_task_id
 		FROM fluvio_jobs WHERE id = $1 AND state = 'running'
 		FOR UPDATE
-	`, jobID).Scan(&attempt, &maxAttempts, &errorTrace)
+	`, jobID).Scan(
+		&queue, &kind, &args, &attempt, &maxAttempts,
+		&errorTrace, &metadata, &tags, &workflowID, &workflowTaskID,
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fluvio.ErrJobNotFound
@@ -256,6 +346,12 @@ func (d *Driver) Nack(ctx context.Context, jobID int64, jobErr error, nextAttemp
 
 	var tag pgconn.CommandTag
 	if attempt >= maxAttempts {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO fluvio_dead_jobs (id, queue, kind, args, error_trace, metadata, tags)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`, jobID, queue, kind, args, newTrace, metadata, tags); err != nil {
+			return err
+		}
 		tag, err = tx.Exec(ctx, `
 			UPDATE fluvio_jobs
 			SET state = 'dead', finalized_at = now(), error_trace = $2
@@ -274,7 +370,22 @@ func (d *Driver) Nack(ctx context.Context, jobID int64, jobErr error, nextAttemp
 	if tag.RowsAffected() == 0 {
 		return fluvio.ErrJobNotFound
 	}
-	return tx.Commit(ctx)
+
+	terminal := attempt >= maxAttempts
+	if terminal && workflowID != nil && workflowTaskID != nil {
+		if err := d.failWorkflowTaskTx(ctx, tx, *workflowID, *workflowTaskID); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	// Do not release when the job never acquired a slot (Fetch-time concurrency rejection).
+	if d.isGlobalConcurrencyKind(kind) && !errors.Is(jobErr, fluvio.ErrConcurrencySlotUnavailable) {
+		return d.ReleaseConcurrencySlot(ctx, kind, "")
+	}
+	return nil
 }
 
 func (d *Driver) Cancel(ctx context.Context, jobID int64) error {
@@ -339,6 +450,94 @@ func (d *Driver) ListJobs(ctx context.Context, p driver.ListJobsParams) ([]*driv
 	}
 	defer rows.Close()
 	return scanJobs(rows)
+}
+
+func (d *Driver) ListDead(ctx context.Context, limit, offset int) ([]*driver.Job, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.pool.Query(ctx, `
+		SELECT `+deadJobColumns+`
+		FROM fluvio_dead_jobs
+		ORDER BY died_at DESC
+		LIMIT $1 OFFSET $2
+	`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDeadJobs(rows)
+}
+
+func (d *Driver) ReplayDead(ctx context.Context, jobID int64) error {
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var queue, kind string
+	var args, metadata []byte
+	var tags []string
+	err = tx.QueryRow(ctx, `
+		SELECT queue, kind, args, metadata, tags
+		FROM fluvio_dead_jobs
+		WHERE id = $1 AND replayed_at IS NULL
+		FOR UPDATE
+	`, jobID).Scan(&queue, &kind, &args, &metadata, &tags)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fluvio.ErrJobNotFound
+		}
+		return err
+	}
+
+	var priority, maxAttempts int16
+	err = tx.QueryRow(ctx, `
+		SELECT priority, max_attempts
+		FROM fluvio_jobs
+		WHERE id = $1
+	`, jobID).Scan(&priority, &maxAttempts)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			priority = 1
+			maxAttempts = 3
+		} else {
+			return err
+		}
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO fluvio_jobs (
+			queue, kind, args, state, priority, max_attempts,
+			scheduled_at, tags, metadata
+		) VALUES ($1, $2, $3, 'pending', $4, $5, now(), $6, $7)
+	`, queue, kind, args, priority, maxAttempts, tags, metadata)
+	if err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE fluvio_dead_jobs SET replayed_at = now() WHERE id = $1
+	`, jobID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fluvio.ErrJobNotFound
+	}
+	return tx.Commit(ctx)
+}
+
+func (d *Driver) PurgeDead(ctx context.Context, before time.Time) (int64, error) {
+	tag, err := d.pool.Exec(ctx, `
+		DELETE FROM fluvio_dead_jobs
+		WHERE died_at < $1
+	`, before)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (d *Driver) TickScheduled(ctx context.Context, now time.Time) (int64, error) {
@@ -637,4 +836,152 @@ func (d *Driver) EnqueueMany(ctx context.Context, params []driver.EnqueueParams)
 		return nil, err
 	}
 	return jobs, nil
+}
+
+const periodicJobColumns = `kind, cron, queue, max_attempts, args, next_run_at, last_run_at, paused`
+
+func scanPeriodicJob(row pgx.Row) (*driver.PeriodicJob, error) {
+	var j driver.PeriodicJob
+	var args []byte
+	err := row.Scan(
+		&j.Kind, &j.Cron, &j.Queue, &j.MaxAttempts, &args,
+		&j.NextRunAt, &j.LastRunAt, &j.Paused,
+	)
+	if err != nil {
+		return nil, err
+	}
+	j.Args = args
+	return &j, nil
+}
+
+func scanPeriodicJobs(rows pgx.Rows) ([]*driver.PeriodicJob, error) {
+	var jobs []*driver.PeriodicJob
+	for rows.Next() {
+		j, err := scanPeriodicJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
+}
+
+func (d *Driver) BeginTx(ctx context.Context) (driver.Tx, error) {
+	return d.pool.Begin(ctx)
+}
+
+func (d *Driver) CommitTx(ctx context.Context, tx driver.Tx) error {
+	pgxTx, ok := tx.(pgx.Tx)
+	if !ok {
+		return errors.New("fluvio/postgres: tx must be pgx.Tx")
+	}
+	return pgxTx.Commit(ctx)
+}
+
+func (d *Driver) RollbackTx(ctx context.Context, tx driver.Tx) error {
+	pgxTx, ok := tx.(pgx.Tx)
+	if !ok {
+		return errors.New("fluvio/postgres: tx must be pgx.Tx")
+	}
+	return pgxTx.Rollback(ctx)
+}
+
+func (d *Driver) UpsertPeriodicJob(ctx context.Context, kind, cron, queue string, maxAttempts int16, args []byte) error {
+	if queue == "" {
+		queue = driver.QueueDefault
+	}
+	if maxAttempts == 0 {
+		maxAttempts = 3
+	}
+	if len(args) == 0 {
+		args = []byte("{}")
+	}
+	_, err := d.pool.Exec(ctx, `
+		INSERT INTO fluvio_periodic_jobs (kind, cron, args, queue, max_attempts, next_run_at)
+		VALUES ($1, $2, $3, $4, $5, now())
+		ON CONFLICT (kind) DO UPDATE SET
+			cron = EXCLUDED.cron,
+			args = EXCLUDED.args,
+			queue = EXCLUDED.queue,
+			max_attempts = EXCLUDED.max_attempts
+	`, kind, cron, args, queue, maxAttempts)
+	return err
+}
+
+func (d *Driver) DuePeriodicJobs(ctx context.Context, now time.Time) ([]*driver.PeriodicJob, error) {
+	rows, err := d.pool.Query(ctx, `
+		SELECT `+periodicJobColumns+`
+		FROM fluvio_periodic_jobs
+		WHERE next_run_at <= $1 AND paused = false
+		FOR UPDATE SKIP LOCKED
+	`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPeriodicJobs(rows)
+}
+
+func (d *Driver) UpdatePeriodicJobNextRun(ctx context.Context, kind string, nextRun time.Time) error {
+	_, err := d.pool.Exec(ctx, `
+		UPDATE fluvio_periodic_jobs
+		SET next_run_at = $2
+		WHERE kind = $1
+	`, kind, nextRun)
+	return err
+}
+
+func (d *Driver) UpdatePeriodicJobNextRunTx(ctx context.Context, tx driver.Tx, kind string, nextRun time.Time) (bool, error) {
+	pgxTx, ok := tx.(pgx.Tx)
+	if !ok {
+		return false, errors.New("fluvio/postgres: tx must be pgx.Tx")
+	}
+	tag, err := pgxTx.Exec(ctx, `
+		UPDATE fluvio_periodic_jobs
+		SET next_run_at = $2, last_run_at = now()
+		WHERE kind = $1 AND next_run_at <= now() AND paused = false
+	`, kind, nextRun)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func (d *Driver) ListPeriodicJobs(ctx context.Context) ([]*driver.PeriodicJob, error) {
+	rows, err := d.pool.Query(ctx, `
+		SELECT `+periodicJobColumns+`
+		FROM fluvio_periodic_jobs
+		ORDER BY kind
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPeriodicJobs(rows)
+}
+
+func (d *Driver) PausePeriodicJob(ctx context.Context, kind string) error {
+	tag, err := d.pool.Exec(ctx, `
+		UPDATE fluvio_periodic_jobs SET paused = true WHERE kind = $1
+	`, kind)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fluvio.ErrJobNotFound
+	}
+	return nil
+}
+
+func (d *Driver) ResumePeriodicJob(ctx context.Context, kind string) error {
+	tag, err := d.pool.Exec(ctx, `
+		UPDATE fluvio_periodic_jobs SET paused = false WHERE kind = $1
+	`, kind)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fluvio.ErrJobNotFound
+	}
+	return nil
 }

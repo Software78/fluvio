@@ -21,18 +21,20 @@ type queueRunner struct {
 }
 
 type pendingPeriodic struct {
-	cronExpr string
-	kind     string
-	data     []byte
+	cronExpr    string
+	kind        string
+	data        []byte
+	queue       string
+	maxAttempts int16
 }
 
 // Client is the main Fluvio job queue client.
 type Client struct {
-	driver    driver.Driver
-	cfg       Config
-	mu        sync.Mutex
-	running   bool
-	stopCh    chan struct{}
+	driver  driver.Driver
+	cfg     Config
+	mu      sync.Mutex
+	running bool
+	stopCh  chan struct{}
 
 	queueRunners []*queueRunner
 	registry     *workerregistry.Registry
@@ -45,6 +47,23 @@ type Client struct {
 
 	leaderMu       sync.Mutex
 	leaderServices bool
+
+	concurrencyMu   sync.RWMutex
+	partitionKeyFns map[string]func(args []byte) string // in-memory only; not persisted
+}
+
+// concurrencyRegistrar is implemented by drivers that track in-memory concurrency limits.
+type concurrencyRegistrar interface {
+	RegisterConcurrencyLimit(kind string, maxConcurrent int, partitioned bool)
+}
+
+// ConcurrencyLimitConfig configures per-kind concurrency caps.
+type ConcurrencyLimitConfig struct {
+	Kind          string
+	MaxConcurrent int
+	// PartitionKeyFn extracts a partition string from raw job args JSON.
+	// Optional; never serialised — each worker process must call SetConcurrencyLimit on startup.
+	PartitionKeyFn func(args []byte) string
 }
 
 // NewClient creates a client. Workers are required for kind mapping even on insert-only clients.
@@ -96,7 +115,7 @@ func (c *Client) Start(ctx context.Context) error {
 
 	c.periodic = scheduler.NewPeriodic(c.driver, c.cfg.Logger, c.cfg.PeriodicInterval)
 	for _, reg := range c.pendingPeriodic {
-		if err := c.periodic.Register(reg.cronExpr, reg.kind, reg.data); err != nil {
+		if err := c.periodic.Register(context.Background(), reg.cronExpr, reg.kind, reg.data, reg.queue, reg.maxAttempts); err != nil {
 			return err
 		}
 	}
@@ -202,20 +221,61 @@ func (c *Client) stopLeaderServices() {
 	c.leaderServices = false
 }
 
-func (c *Client) AddPeriodicJob(cronExpr string, args JobArgs) error {
+func (c *Client) AddPeriodicJob(cronExpr string, args JobArgs, opts ...EnqueueOption) error {
+	o := applyEnqueueOptions(opts)
 	data, err := json.Marshal(args)
 	if err != nil {
 		return err
 	}
 	if c.periodic != nil {
-		return c.periodic.Register(cronExpr, args.Kind(), data)
+		return c.periodic.Register(context.Background(), cronExpr, args.Kind(), data, o.queue, o.maxAttempts)
 	}
 	c.pendingPeriodic = append(c.pendingPeriodic, pendingPeriodic{
-		cronExpr: cronExpr,
-		kind:     args.Kind(),
-		data:     data,
+		cronExpr:    cronExpr,
+		kind:        args.Kind(),
+		data:        data,
+		queue:       o.queue,
+		maxAttempts: o.maxAttempts,
 	})
 	return nil
+}
+
+func (c *Client) ListPeriodicJobs(ctx context.Context) ([]driver.PeriodicJob, error) {
+	jobs, err := c.driver.ListPeriodicJobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]driver.PeriodicJob, len(jobs))
+	for i, j := range jobs {
+		out[i] = *j
+	}
+	return out, nil
+}
+
+func (c *Client) PausePeriodicJob(ctx context.Context, kind string) error {
+	return c.driver.PausePeriodicJob(ctx, kind)
+}
+
+func (c *Client) ResumePeriodicJob(ctx context.Context, kind string) error {
+	return c.driver.ResumePeriodicJob(ctx, kind)
+}
+
+func (c *Client) prepareJobArgs(data []byte, encrypted bool) ([]byte, bool, error) {
+	if !encrypted {
+		return data, false, nil
+	}
+	if c.cfg.KeyProvider == nil {
+		return nil, false, ErrNoKeyProvider
+	}
+	ciphertext, err := c.cfg.KeyProvider.Encrypt(data)
+	if err != nil {
+		return nil, false, err
+	}
+	stored, err := json.Marshal(ciphertext)
+	if err != nil {
+		return nil, false, err
+	}
+	return stored, true, nil
 }
 
 func (c *Client) Enqueue(ctx context.Context, args JobArgs, opts ...EnqueueOption) (*JobRow, error) {
@@ -224,16 +284,21 @@ func (c *Client) Enqueue(ctx context.Context, args JobArgs, opts ...EnqueueOptio
 	if err != nil {
 		return nil, err
 	}
+	argsData, encrypted, err := c.prepareJobArgs(data, o.encrypted)
+	if err != nil {
+		return nil, err
+	}
 	job, err := c.driver.Enqueue(ctx, driver.EnqueueParams{
 		Queue:       o.queue,
 		Kind:        args.Kind(),
-		Args:        data,
+		Args:        argsData,
 		Priority:    o.priority,
 		MaxAttempts: o.maxAttempts,
 		ScheduledAt: o.scheduledAt,
 		UniqueKey:   o.uniqueKey,
 		Tags:        o.tags,
 		Metadata:    o.metadata,
+		Encrypted:   encrypted,
 	})
 	if err != nil {
 		return nil, err
@@ -248,16 +313,21 @@ func (c *Client) EnqueueTx(ctx context.Context, tx Tx, args JobArgs, opts ...Enq
 	if err != nil {
 		return nil, err
 	}
+	argsData, encrypted, err := c.prepareJobArgs(data, o.encrypted)
+	if err != nil {
+		return nil, err
+	}
 	job, err := c.driver.EnqueueTx(ctx, tx, driver.EnqueueParams{
 		Queue:       o.queue,
 		Kind:        args.Kind(),
-		Args:        data,
+		Args:        argsData,
 		Priority:    o.priority,
 		MaxAttempts: o.maxAttempts,
 		ScheduledAt: o.scheduledAt,
 		UniqueKey:   o.uniqueKey,
 		Tags:        o.tags,
 		Metadata:    o.metadata,
+		Encrypted:   encrypted,
 	})
 	if err != nil {
 		return nil, err
@@ -280,16 +350,21 @@ func (c *Client) EnqueueMany(ctx context.Context, argsList []JobArgs, opts ...En
 		if err != nil {
 			return nil, err
 		}
+		argsData, encrypted, err := c.prepareJobArgs(data, o.encrypted)
+		if err != nil {
+			return nil, err
+		}
 		params[i] = driver.EnqueueParams{
 			Queue:       o.queue,
 			Kind:        args.Kind(),
-			Args:        data,
+			Args:        argsData,
 			Priority:    o.priority,
 			MaxAttempts: o.maxAttempts,
 			ScheduledAt: o.scheduledAt,
 			UniqueKey:   o.uniqueKey,
 			Tags:        o.tags,
 			Metadata:    o.metadata,
+			Encrypted:   encrypted,
 		}
 	}
 	jobs, err := c.driver.EnqueueMany(ctx, params)
@@ -327,6 +402,26 @@ func (c *Client) ListJobs(ctx context.Context, queue, state, kind string, limit,
 		rows[i] = driverJobToRow(job)
 	}
 	return rows, nil
+}
+
+func (c *Client) ListDeadJobs(ctx context.Context, limit, offset int) ([]JobRow, error) {
+	jobs, err := c.driver.ListDead(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]JobRow, len(jobs))
+	for i, job := range jobs {
+		rows[i] = driverJobToRow(job)
+	}
+	return rows, nil
+}
+
+func (c *Client) ReplayDeadJob(ctx context.Context, jobID int64) error {
+	return c.driver.ReplayDead(ctx, jobID)
+}
+
+func (c *Client) PurgeDeadJobs(ctx context.Context, before time.Time) (int64, error) {
+	return c.driver.PurgeDead(ctx, before)
 }
 
 func (c *Client) PauseQueue(ctx context.Context, queue string) error {
@@ -383,6 +478,39 @@ func (c *Client) Migrate(ctx context.Context) error {
 	return c.driver.Migrate(ctx)
 }
 
+// SetConcurrencyLimit configures a per-kind concurrency cap. PartitionKeyFn is held
+// in memory only and is not persisted; each worker process must call this on startup.
+func (c *Client) SetConcurrencyLimit(ctx context.Context, cfg ConcurrencyLimitConfig) error {
+	if err := c.driver.SetConcurrencyLimit(ctx, driver.ConcurrencyLimit{
+		Kind:          cfg.Kind,
+		MaxConcurrent: cfg.MaxConcurrent,
+	}); err != nil {
+		return err
+	}
+
+	c.concurrencyMu.Lock()
+	if c.partitionKeyFns == nil {
+		c.partitionKeyFns = make(map[string]func(args []byte) string)
+	}
+	if cfg.PartitionKeyFn != nil {
+		c.partitionKeyFns[cfg.Kind] = cfg.PartitionKeyFn
+	} else {
+		delete(c.partitionKeyFns, cfg.Kind)
+	}
+	c.concurrencyMu.Unlock()
+
+	if reg, ok := c.driver.(concurrencyRegistrar); ok {
+		reg.RegisterConcurrencyLimit(cfg.Kind, cfg.MaxConcurrent, cfg.PartitionKeyFn != nil)
+	}
+	return nil
+}
+
+func (c *Client) partitionKeyFn(kind string) func(args []byte) string {
+	c.concurrencyMu.RLock()
+	defer c.concurrencyMu.RUnlock()
+	return c.partitionKeyFns[kind]
+}
+
 // handleJob runs a fetched job. ctx comes from the fetch loop (context.Background);
 // it is not cancelled on client shutdown — StopContext waits on the executor
 // WaitGroup instead. Per-job timeouts use context.WithTimeout derived from ctx.
@@ -394,6 +522,36 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 		return err
 	}
 
+	args := dJob.Args
+	if dJob.Encrypted {
+		if c.cfg.KeyProvider == nil {
+			return c.nackJob(ctx, dJob, ErrNoKeyProvider, time.Now().Add(5*time.Second))
+		}
+		var ciphertext []byte
+		if err := json.Unmarshal(dJob.Args, &ciphertext); err != nil {
+			return c.nackJob(ctx, dJob, err, time.Now().Add(5*time.Second))
+		}
+		plaintext, err := c.cfg.KeyProvider.Decrypt(ciphertext)
+		if err != nil {
+			return c.nackJob(ctx, dJob, err, time.Now().Add(5*time.Second))
+		}
+		args = plaintext
+	}
+
+	// Partitioned limits acquire here; global limits acquire in driver Fetch and release in Ack/Nack.
+	// Note: stuck-job reaper nacks bypass this defer for partitioned limits (partition key not persisted).
+	if fn := c.partitionKeyFn(dJob.Kind); fn != nil {
+		partitionKey := fn(args)
+		acquired, err := c.driver.AcquireConcurrencySlot(ctx, dJob.Kind, partitionKey)
+		if err != nil {
+			return err
+		}
+		if !acquired {
+			return c.nackJob(ctx, dJob, ErrConcurrencySlotUnavailable, time.Now().Add(5*time.Second))
+		}
+		defer func() { _ = c.driver.ReleaseConcurrencySlot(ctx, dJob.Kind, partitionKey) }()
+	}
+
 	maxWorkers := 0
 	if qc, ok := c.cfg.Queues[dJob.Queue]; ok {
 		maxWorkers = qc.MaxWorkers
@@ -402,7 +560,7 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 		id:          dJob.ID,
 		queue:       dJob.Queue,
 		kind:        dJob.Kind,
-		args:        dJob.Args,
+		args:        args,
 		attempt:     dJob.Attempt,
 		maxAttempts: dJob.MaxAttempts,
 		attemptedBy: dJob.AttemptedBy,

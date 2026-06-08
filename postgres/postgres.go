@@ -6,6 +6,7 @@ package postgres
 import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/software78/fluvio/internal/driver"
 	internal "github.com/software78/fluvio/internal/driver/postgres"
 )
 
@@ -13,6 +14,8 @@ type Config = internal.Config
 
 // Driver is the PostgreSQL driver type.
 type Driver = internal.Driver
+
+var _ driver.Driver = (*Driver)(nil)
 
 // New creates a PostgreSQL-backed driver.
 func New(pool *pgxpool.Pool, cfg Config) *internal.Driver {

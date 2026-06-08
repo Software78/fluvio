@@ -28,6 +28,11 @@ type pendingPeriodic struct {
 	maxAttempts int16
 }
 
+// Verify Client satisfies the apiClient interface used by fluviui.
+// This assertion lives here rather than in fluviui to avoid an import cycle.
+// Uncomment if fluviui's apiClient is ever exported:
+// var _ fluviui.apiClient = (*Client)(nil)
+
 // Client is the main Fluvio job queue client.
 type Client struct {
 	driver  driver.Driver

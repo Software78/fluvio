@@ -23,7 +23,7 @@ func (WorkerDefaults[T]) Timeout() time.Duration { return 0 }
 // Attempt is the number of attempts made including the current one
 // (incremented by Fetch before the worker runs).
 func (WorkerDefaults[T]) NextAttempt(job *Job[T], _ error) time.Duration {
-	return DefaultRetryDelay(job.Attempt, 24*time.Hour)
+	return DefaultRetryDelayForJob(job, 24*time.Hour)
 }
 
 type timeoutWorker[T JobArgs] interface {
@@ -57,6 +57,9 @@ func workerNextAttempt[T JobArgs](w Worker[T], job *Job[T], err error, maxDelay 
 }
 
 // DefaultRetryDelay returns the built-in exponential backoff for a given attempt count.
+// attempt should be the value of job.Attempt, which is already incremented by Fetch
+// before the worker runs — so attempt=1 on the first failure, attempt=2 on the second, etc.
+// The delay sequence is approximately: 4s, 16s, 64s, 256s, capped at maxDelay.
 func DefaultRetryDelay(attempt int16, maxDelay time.Duration) time.Duration {
 	if maxDelay <= 0 {
 		maxDelay = 24 * time.Hour
@@ -72,6 +75,12 @@ func DefaultRetryDelay(attempt int16, maxDelay time.Duration) time.Duration {
 		base = time.Second
 	}
 	return base
+}
+
+// DefaultRetryDelayForJob returns the default exponential backoff for the given job.
+// Use this inside a custom NextAttempt implementation to fall back to the default schedule.
+func DefaultRetryDelayForJob[T JobArgs](job *Job[T], maxDelay time.Duration) time.Duration {
+	return DefaultRetryDelay(job.Attempt, maxDelay)
 }
 
 type Workers struct {

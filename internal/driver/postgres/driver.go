@@ -14,6 +14,14 @@ import (
 	"github.com/software78/fluvio/internal/driver"
 )
 
+var (
+	_ driver.Driver            = (*Driver)(nil)
+	_ driver.LeaderElector     = (*Driver)(nil)
+	_ driver.SchedulerDriver   = (*Driver)(nil)
+	_ driver.PeriodicDriver    = (*Driver)(nil)
+	_ driver.MaintenanceDriver = (*Driver)(nil)
+)
+
 var errLeaderLost = errors.New("fluvio/postgres: leader lease lost")
 
 const leaderLockID int64 = 0x666c7576696f

@@ -8,6 +8,8 @@ import (
 	"github.com/software78/fluvio/internal/driver"
 )
 
+// JobHandler is the stable job-dispatch callback signature used by FetchLoop and Client.handleJob.
+// Changing this signature requires updating all call sites; it is not interface-assertable.
 type JobHandler func(ctx context.Context, job *driver.Job) error
 
 type Executor struct {

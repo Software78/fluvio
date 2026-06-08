@@ -79,6 +79,33 @@ type WorkerInstance struct {
 // Tx is an opaque transaction handle. Drivers cast it to their concrete type.
 type Tx interface{}
 
+type LeaderElector interface {
+	TryAcquireLeader(ctx context.Context) (bool, error)
+	VerifyLeader(ctx context.Context) error
+	ReleaseLeader(ctx context.Context) error
+}
+
+type SchedulerDriver interface {
+	TickScheduled(ctx context.Context, now time.Time) (int64, error)
+}
+
+type PeriodicDriver interface {
+	UpsertPeriodicJob(ctx context.Context, kind, cron, queue string, maxAttempts int16, args []byte, nextRun time.Time) error
+	DuePeriodicJobs(ctx context.Context, now time.Time) ([]*PeriodicJob, error)
+	UpdatePeriodicJobNextRun(ctx context.Context, kind string, nextRun time.Time) error
+	UpdatePeriodicJobNextRunTx(ctx context.Context, tx Tx, kind string, nextRun time.Time) (bool, error)
+	ListPeriodicJobs(ctx context.Context) ([]*PeriodicJob, error)
+	PausePeriodicJob(ctx context.Context, kind string) error
+	ResumePeriodicJob(ctx context.Context, kind string) error
+	BeginTx(ctx context.Context) (Tx, error)
+	CommitTx(ctx context.Context, tx Tx) error
+	RollbackTx(ctx context.Context, tx Tx) error
+}
+
+type MaintenanceDriver interface {
+	StuckJobs(ctx context.Context, timeout time.Duration) ([]*Job, error)
+}
+
 // Driver is the OSS driver interface.
 type Driver interface {
 	Enqueue(ctx context.Context, p EnqueueParams) (*Job, error)

@@ -1,5 +1,7 @@
 # Fluvio
 
+[![codecov](https://codecov.io/gh/Software78/fluvio/graph/badge.svg)](https://codecov.io/gh/Software78/fluvio)
+
 A production-grade background job queue for Go backed by your relational database. Enqueue jobs in the same database transaction as your business logic — no Redis, no separate broker.
 
 ## Features
@@ -207,6 +209,19 @@ client.SetConcurrencyLimit(ctx, fluvio.ConcurrencyLimitConfig{
 
 For per-tenant limits, provide a `PartitionKeyFn` that extracts a partition from raw args JSON. `PartitionKeyFn` is held in memory only — each worker process must call `SetConcurrencyLimit` on startup.
 
+### Custom retry backoff
+
+Override `NextAttempt` on your worker to customize the retry schedule. Call `DefaultRetryDelayForJob` to fall back to the built-in exponential schedule for some error types:
+
+```go
+func (w *MyWorker) NextAttempt(job *fluvio.Job[MyArgs], err error) time.Duration {
+	if errors.Is(err, ErrRateLimited) {
+		return 60 * time.Second // fixed delay for rate limit errors
+	}
+	return fluvio.DefaultRetryDelayForJob(job, w.cfg.MaxRetryDelay)
+}
+```
+
 ### Dead letter queue
 
 Jobs that exhaust retries move to `dead` state and are copied to `fluvio_dead_jobs`. Inspect, replay, or purge them:
@@ -302,6 +317,7 @@ The `fluviui` HTTP handlers are unauthenticated. Deploy behind a reverse proxy o
 ```bash
 make test              # unit tests with -race
 make test-integration  # requires Docker
+make coverage          # unit + integration profiles, summary + coverage.html
 ```
 
 ## License

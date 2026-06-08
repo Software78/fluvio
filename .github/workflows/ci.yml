@@ -17,10 +17,19 @@ jobs:
           go-version-file: go.mod
 
       - name: Unit tests
-        run: go test -race ./...
+        id: unit
+        run: go test -race -coverprofile=unit.out -covermode=atomic ./...
 
       - name: Integration tests
-        run: go test -race -tags integration ./...
+        run: go test -race -tags integration -coverprofile=integration.out -covermode=atomic ./...
+
+      - name: Upload coverage to Codecov
+        if: always() && steps.unit.outcome != 'skipped'
+        uses: codecov/codecov-action@v5
+        with:
+          files: unit.out,integration.out
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
       - name: Build CLI
         run: go build -o bin/fluvio ./cmd/fluvio

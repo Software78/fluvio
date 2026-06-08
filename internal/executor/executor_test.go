@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,11 +15,13 @@ import (
 )
 
 type fakeDriver struct {
-	mu    sync.Mutex
-	fetch []*driver.Job
+	mu         sync.Mutex
+	fetch      []*driver.Job
+	fetchCount atomic.Int32
 }
 
 func (f *fakeDriver) Fetch(_ context.Context, _ []string, _ string, max int) ([]*driver.Job, error) {
+	f.fetchCount.Add(1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.fetch) == 0 {
@@ -53,7 +56,7 @@ func (f *fakeDriver) ListDead(context.Context, int, int) ([]*driver.Job, error) 
 func (f *fakeDriver) ReplayDead(context.Context, int64) error                   { return nil }
 func (f *fakeDriver) PurgeDead(context.Context, time.Time) (int64, error)       { return 0, nil }
 func (f *fakeDriver) TickScheduled(context.Context, time.Time) (int64, error)   { return 0, nil }
-func (f *fakeDriver) UpsertPeriodicJob(context.Context, string, string, string, int16, []byte) error {
+func (f *fakeDriver) UpsertPeriodicJob(context.Context, string, string, string, int16, []byte, time.Time) error {
 	return nil
 }
 func (f *fakeDriver) DuePeriodicJobs(context.Context, time.Time) ([]*driver.PeriodicJob, error) {
@@ -238,9 +241,37 @@ func TestFetchLoopBackoff(t *testing.T) {
 	exec := executor.New(5, slog.Default())
 	loop := executor.NewFetchLoop(fd, []string{"default"}, "w1", 10*time.Millisecond, exec, func(ctx context.Context, job *driver.Job) error {
 		return nil
-	}, slog.Default())
+	}, slog.Default(), nil)
 	loop.Start()
 	time.Sleep(100 * time.Millisecond)
 	loop.Stop()
 	exec.Stop()
+}
+
+func TestFetchLoopWake(t *testing.T) {
+	fd := &fakeDriver{
+		fetch: []*driver.Job{{ID: 1, Queue: "default", Kind: "noop"}},
+	}
+	exec := executor.New(5, slog.Default())
+	wake := make(chan struct{}, 1)
+	loop := executor.NewFetchLoop(fd, []string{"default"}, "w1", time.Second, exec, func(ctx context.Context, job *driver.Job) error {
+		return nil
+	}, slog.Default(), wake)
+	loop.Start()
+	t.Cleanup(func() {
+		loop.Stop()
+		exec.Stop()
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	require.Equal(t, int32(1), fd.fetchCount.Load())
+
+	fd.mu.Lock()
+	fd.fetch = []*driver.Job{{ID: 2, Queue: "default", Kind: "noop"}}
+	fd.mu.Unlock()
+
+	wake <- struct{}{}
+	require.Eventually(t, func() bool {
+		return fd.fetchCount.Load() >= 2
+	}, time.Second, 10*time.Millisecond)
 }

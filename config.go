@@ -24,6 +24,8 @@ type Config struct {
 	WorkerTTL                   time.Duration
 	LeaderServicesStartupDelay  time.Duration // delay before first scheduler/reaper/periodic tick after leader election
 	KeyProvider                 KeyProvider   // if non-nil, encryption is available
+	PollOnly                    bool          // disable LISTEN/NOTIFY; use with PgBouncer transaction pooling
+	NotifyDebounce              time.Duration // minimum interval between NOTIFY per queue channel
 }
 
 type QueueConfig struct {
@@ -56,6 +58,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.WorkerTTL == 0 {
 		c.WorkerTTL = 90 * time.Second
+	}
+	if c.NotifyDebounce == 0 {
+		c.NotifyDebounce = 100 * time.Millisecond
 	}
 }
 

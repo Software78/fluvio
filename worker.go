@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -57,19 +58,26 @@ func workerNextAttempt[T JobArgs](w Worker[T], job *Job[T], err error, maxDelay 
 
 // DefaultRetryDelay returns the built-in exponential backoff for a given attempt count.
 func DefaultRetryDelay(attempt int16, maxDelay time.Duration) time.Duration {
+	if maxDelay <= 0 {
+		maxDelay = 24 * time.Hour
+	}
 	base := time.Duration(math.Pow(4, float64(attempt))) * time.Second
 	if base > 24*time.Hour {
 		base = 24 * time.Hour
 	}
 	if base > maxDelay {
-		return maxDelay
+		base = maxDelay
+	}
+	if base < time.Second {
+		base = time.Second
 	}
 	return base
 }
 
 type Workers struct {
-	mu     sync.RWMutex
-	byKind map[string]anyWorker
+	mu      sync.RWMutex
+	started atomic.Bool
+	byKind  map[string]anyWorker
 }
 
 type anyWorker interface {
@@ -142,11 +150,18 @@ func NewWorkers() *Workers {
 // AddWorker registers a worker for a job kind. Call before NewClient/Start;
 // concurrent AddWorker after Start is not supported.
 func AddWorker[T JobArgs](w *Workers, worker Worker[T]) {
+	if w.started.Load() {
+		panic("fluvio: AddWorker after Client.Start is not supported")
+	}
 	var zero T
 	kind := zero.Kind()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.byKind[kind] = &typedWorker[T]{kindName: kind, worker: worker}
+}
+
+func (w *Workers) markStarted() {
+	w.started.Store(true)
 }
 
 func (w *Workers) get(kind string) (anyWorker, bool) {

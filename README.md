@@ -115,7 +115,14 @@ tx.Commit(ctx) // job visible only after commit
 
 ### Bulk enqueue
 
-`EnqueueMany` runs all inserts in one transaction. If any row fails (including a unique-key conflict), the entire batch is rolled back and no jobs are inserted.
+`EnqueueMany` runs all inserts in one transaction. If any row fails (including a unique-key conflict), the entire batch is rolled back and no jobs are inserted. Each item can specify its own enqueue options (queue, priority, tags, and so on).
+
+```go
+rows, err := client.EnqueueMany(ctx, []fluvio.EnqueueItem{
+    {Args: SendEmailArgs{To: "a@example.com"}, Opts: []fluvio.EnqueueOption{fluvio.WithPriority(1)}},
+    {Args: SendEmailArgs{To: "b@example.com"}, Opts: []fluvio.EnqueueOption{fluvio.WithQueue("critical")}},
+})
+```
 
 Use `UniqueJobExists` to check for an active job with a given unique key before enqueueing.
 
@@ -126,9 +133,20 @@ Mount the REST API and SSE stream for [Fluvio UI](https://github.com/Software78/
 ```go
 import "github.com/software78/fluvio/fluviui"
 
-// Production — restrict origin
+// Production — restrict origin and require authentication
 mux.Handle("/fluvio/", fluviui.Handler(client,
     fluviui.WithAllowedOrigin("https://your-ui.example.com"),
+    fluviui.WithMiddleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            user, pass, ok := r.BasicAuth()
+            if !ok || user != "admin" || pass != os.Getenv("FLUVIO_UI_PASSWORD") {
+                w.Header().Set("WWW-Authenticate", `Basic realm="fluvio"`)
+                http.Error(w, "unauthorized", http.StatusUnauthorized)
+                return
+            }
+            next.ServeHTTP(w, r)
+        })
+    }),
 ))
 
 // Development — allow all origins (default)
@@ -238,7 +256,9 @@ make build   # outputs bin/fluvio
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `FetchInterval` | 500ms | Poll interval for new jobs |
+| `FetchInterval` | 500ms | Fallback poll interval when LISTEN/NOTIFY is enabled; primary poll interval when `PollOnly` is true |
+| `PollOnly` | false | Disable LISTEN/NOTIFY wakeup (required with PgBouncer transaction pooling) |
+| `NotifyDebounce` | 100ms | Minimum interval between PostgreSQL NOTIFY calls per queue channel |
 | `JobTimeout` | 30m | Max running time before reaper nacks |
 | `MaxRetryDelay` | 24h | Cap on exponential backoff |
 | `PeriodicInterval` | 30s | Tick interval for durable cron jobs |
@@ -257,6 +277,10 @@ Processing clients with at least one queue where `MaxWorkers > 0` register in th
 Per-queue `MaxWorkers` controls concurrency — each queue gets its own fetch loop capped at that limit. Set `MaxWorkers` to 0 to disable processing for a queue. Omit queues entirely for insert-only clients.
 
 Leader election (Postgres advisory lock) runs scheduled sweeps, durable periodic jobs, and the stuck-job reaper on one instance. For production HA, prefer `UseLeaseTable: true` on the Postgres driver; advisory-lock mode requires a stable dedicated connection.
+
+### Job wakeup (PostgreSQL)
+
+The Postgres driver uses **LISTEN/NOTIFY** for low-latency job pickup. When a pending job is enqueued (or promoted from `scheduled`), workers are woken immediately; `FetchInterval` remains as a fallback poll. Set `PollOnly: true` on the client (or `postgres.Config`) when using PgBouncer in transaction pooling mode, where LISTEN is not supported.
 
 ### Schema notes
 

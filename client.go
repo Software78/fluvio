@@ -50,6 +50,8 @@ type Client struct {
 
 	concurrencyMu   sync.RWMutex
 	partitionKeyFns map[string]func(args []byte) string // in-memory only; not persisted
+
+	wakeSub JobWakeSubscription
 }
 
 // concurrencyRegistrar is implemented by drivers that track in-memory concurrency limits.
@@ -93,6 +95,30 @@ func (c *Client) Start(ctx context.Context) error {
 		return ErrClientRunning
 	}
 
+	if nc, ok := c.driver.(NotifyConfigurer); ok {
+		nc.ConfigureNotify(c.cfg.PollOnly, c.cfg.NotifyDebounce)
+	}
+
+	var wake <-chan struct{}
+	if !c.cfg.PollOnly {
+		if sub, ok := c.driver.(JobSubscriber); ok {
+			queueNames := make([]string, 0, len(c.cfg.Queues))
+			for name, qc := range c.cfg.Queues {
+				if qc.MaxWorkers > 0 {
+					queueNames = append(queueNames, name)
+				}
+			}
+			if len(queueNames) > 0 {
+				subscriber, err := sub.Subscribe(ctx, queueNames)
+				if err != nil {
+					return err
+				}
+				c.wakeSub = subscriber
+				wake = subscriber.Wake()
+			}
+		}
+	}
+
 	c.queueRunners = nil
 	for name, qc := range c.cfg.Queues {
 		if qc.MaxWorkers <= 0 {
@@ -107,6 +133,7 @@ func (c *Client) Start(ctx context.Context) error {
 			exec,
 			c.handleJob,
 			c.cfg.Logger,
+			wake,
 		)
 		c.queueRunners = append(c.queueRunners, &queueRunner{loop: loop, exec: exec})
 	}
@@ -154,6 +181,7 @@ func (c *Client) Start(ctx context.Context) error {
 	})
 	c.elector.Start()
 
+	c.cfg.Workers.markStarted()
 	c.running = true
 	return nil
 }
@@ -184,6 +212,10 @@ func (c *Client) StopContext(ctx context.Context) error {
 
 	if c.elector != nil {
 		c.elector.Stop()
+	}
+	if c.wakeSub != nil {
+		_ = c.wakeSub.Close()
+		c.wakeSub = nil
 	}
 	for _, qr := range c.queueRunners {
 		qr.loop.Stop()
@@ -228,6 +260,8 @@ func (c *Client) AddPeriodicJob(cronExpr string, args JobArgs, opts ...EnqueueOp
 	if err != nil {
 		return err
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.periodic != nil {
 		return c.periodic.Register(context.Background(), cronExpr, args.Kind(), data, o.queue, o.maxAttempts)
 	}
@@ -337,20 +371,26 @@ func (c *Client) EnqueueTx(ctx context.Context, tx Tx, args JobArgs, opts ...Enq
 	return &row, nil
 }
 
+// EnqueueItem is one job in an EnqueueMany batch with per-item options.
+type EnqueueItem struct {
+	Args JobArgs
+	Opts []EnqueueOption
+}
+
 // EnqueueMany inserts multiple jobs in a single transaction. All jobs commit
 // together or none do; the first error (including ErrUniqueConflict) rolls back
 // the entire batch.
-func (c *Client) EnqueueMany(ctx context.Context, argsList []JobArgs, opts ...EnqueueOption) ([]JobRow, error) {
-	if len(argsList) == 0 {
+func (c *Client) EnqueueMany(ctx context.Context, items []EnqueueItem) ([]JobRow, error) {
+	if len(items) == 0 {
 		return nil, nil
 	}
-	o := applyEnqueueOptions(opts)
-	if o.uniqueKey != nil {
-		return nil, fmt.Errorf("%w: WithUniqueKey is not supported in EnqueueMany; enqueue jobs individually", ErrInvalidConfig)
-	}
-	params := make([]driver.EnqueueParams, len(argsList))
-	for i, args := range argsList {
-		data, err := json.Marshal(args)
+	params := make([]driver.EnqueueParams, len(items))
+	for i, item := range items {
+		o := applyEnqueueOptions(item.Opts)
+		if o.uniqueKey != nil {
+			return nil, fmt.Errorf("%w: WithUniqueKey is not supported in EnqueueMany; enqueue jobs individually", ErrInvalidConfig)
+		}
+		data, err := json.Marshal(item.Args)
 		if err != nil {
 			return nil, err
 		}
@@ -360,7 +400,7 @@ func (c *Client) EnqueueMany(ctx context.Context, argsList []JobArgs, opts ...En
 		}
 		params[i] = driver.EnqueueParams{
 			Queue:       o.queue,
-			Kind:        args.Kind(),
+			Kind:        item.Args.Kind(),
 			Args:        argsData,
 			Priority:    o.priority,
 			MaxAttempts: o.maxAttempts,
@@ -554,7 +594,7 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 		}
 		if err := c.driver.SetConcurrencySlotKey(ctx, dJob.ID, partitionKey); err != nil {
 			_ = c.driver.ReleaseConcurrencySlot(ctx, dJob.Kind, partitionKey)
-			return err
+			return c.nackJob(ctx, dJob, err, time.Now().Add(5*time.Second))
 		}
 	}
 

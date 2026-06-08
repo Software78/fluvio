@@ -165,8 +165,8 @@ func jobsHandler(client apiClient) http.Handler {
 func jobDetailHandler(client apiClient) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		idStr := strings.TrimPrefix(r.URL.Path, "/fluvio/api/jobs/")
-		var id int64
-		if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil || id <= 0 {
 			http.NotFound(w, r)
 			return
 		}

@@ -11,6 +11,9 @@ import (
 )
 
 // Workflow is a DAG of jobs built with the fluent Task API.
+// When a task fails terminally, sibling tasks in waiting, pending, or running
+// state are cancelled and their queued jobs are cancelled. An in-flight running
+// job may still finish its current execution, but no downstream tasks are enqueued.
 type Workflow struct {
 	id       string
 	tasks    []workflowTaskDef
@@ -64,7 +67,9 @@ func WithTaskEnqueueOptions(opts ...EnqueueOption) WorkflowOption {
 
 func generateWorkflowID() string {
 	var b [16]byte
-	_, _ = rand.Read(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
 	return hex.EncodeToString(b[:])
 }
 

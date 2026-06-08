@@ -80,7 +80,7 @@ func (m *mockDriver) ListDead(context.Context, int, int) ([]*driver.Job, error) 
 func (m *mockDriver) ReplayDead(context.Context, int64) error                   { return nil }
 func (m *mockDriver) PurgeDead(context.Context, time.Time) (int64, error)       { return 0, nil }
 func (m *mockDriver) TickScheduled(context.Context, time.Time) (int64, error)   { return 0, nil }
-func (m *mockDriver) UpsertPeriodicJob(context.Context, string, string, string, int16, []byte) error {
+func (m *mockDriver) UpsertPeriodicJob(context.Context, string, string, string, int16, []byte, time.Time) error {
 	return nil
 }
 func (m *mockDriver) DuePeriodicJobs(context.Context, time.Time) ([]*driver.PeriodicJob, error) {
@@ -184,5 +184,39 @@ func TestElectorRenewFailureTriggersLoss(t *testing.T) {
 		t.Fatal("expected OnLoss after renew failure")
 	}
 
+	e.Stop()
+}
+
+func TestElectorStopDuringRenewFailure(t *testing.T) {
+	md := &mockDriver{}
+	e := NewElector(md, slog.Default(), LeaderCallbacks{})
+	e.interval = 20 * time.Millisecond
+	e.renew = 20 * time.Millisecond
+	e.Start()
+	time.Sleep(50 * time.Millisecond)
+
+	md.setRenewFailAt(1)
+
+	done := make(chan struct{})
+	go func() {
+		e.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop blocked during renew failure (deadlock)")
+	}
+}
+
+func TestElectorStopTwice(t *testing.T) {
+	md := &mockDriver{}
+	e := NewElector(md, slog.Default(), LeaderCallbacks{})
+	e.interval = 20 * time.Millisecond
+	e.renew = 20 * time.Millisecond
+	e.Start()
+	time.Sleep(30 * time.Millisecond)
+	e.Stop()
 	e.Stop()
 }

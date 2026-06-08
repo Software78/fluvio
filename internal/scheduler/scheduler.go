@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/software78/fluvio/internal/driver"
@@ -14,6 +15,7 @@ type Scheduler struct {
 	interval     time.Duration
 	startupDelay time.Duration
 	stopCh       chan struct{}
+	stopOnce     sync.Once
 	doneCh       chan struct{}
 }
 
@@ -36,7 +38,7 @@ func (s *Scheduler) Start() {
 }
 
 func (s *Scheduler) Stop() {
-	close(s.stopCh)
+	s.stopOnce.Do(func() { close(s.stopCh) })
 	<-s.doneCh
 }
 

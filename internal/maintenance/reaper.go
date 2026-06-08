@@ -3,6 +3,7 @@ package maintenance
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/software78/fluvio/internal/driver"
@@ -22,6 +23,7 @@ type Reaper struct {
 	retryDelay    retryDelayFunc
 	nack          NackFunc
 	stopCh        chan struct{}
+	stopOnce      sync.Once
 	doneCh        chan struct{}
 }
 
@@ -54,7 +56,7 @@ func (r *Reaper) Start() {
 }
 
 func (r *Reaper) Stop() {
-	close(r.stopCh)
+	r.stopOnce.Do(func() { close(r.stopCh) })
 	<-r.doneCh
 }
 

@@ -18,6 +18,7 @@ type Periodic struct {
 	parser       cron.Parser
 	schedules    sync.Map // kind -> cron.Schedule
 	stopCh       chan struct{}
+	stopOnce     sync.Once
 	doneCh       chan struct{}
 }
 
@@ -41,11 +42,8 @@ func (p *Periodic) Register(ctx context.Context, cronExpr, kind string, args []b
 	if err != nil {
 		return err
 	}
-	if err := p.driver.UpsertPeriodicJob(ctx, kind, cronExpr, queue, maxAttempts, args); err != nil {
-		return err
-	}
 	nextRun := schedule.Next(time.Now().UTC())
-	if err := p.driver.UpdatePeriodicJobNextRun(ctx, kind, nextRun); err != nil {
+	if err := p.driver.UpsertPeriodicJob(ctx, kind, cronExpr, queue, maxAttempts, args, nextRun); err != nil {
 		return err
 	}
 	p.schedules.Store(kind, schedule)
@@ -57,7 +55,7 @@ func (p *Periodic) Start() {
 }
 
 func (p *Periodic) Stop() {
-	close(p.stopCh)
+	p.stopOnce.Do(func() { close(p.stopCh) })
 	<-p.doneCh
 }
 

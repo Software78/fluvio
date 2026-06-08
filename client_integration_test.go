@@ -74,6 +74,34 @@ func setupIntegration(t *testing.T) (*pgxpool.Pool, *fluvio.Client, *HelloWorker
 	return pool, client, hw
 }
 
+func TestNotifyWakeupLatency(t *testing.T) {
+	_, client, hw := setupIntegration(t)
+	ctx := context.Background()
+
+	client, err := fluvio.NewClient(client.Driver(), &fluvio.Config{
+		FetchInterval: 10 * time.Second,
+		Queues: map[string]fluvio.QueueConfig{
+			fluvio.QueueDefault: {MaxWorkers: 5},
+		},
+		Workers: mustWorkers(t, hw),
+	})
+	require.NoError(t, err)
+	require.NoError(t, client.Start(ctx))
+	t.Cleanup(func() { client.Stop() })
+
+	start := time.Now()
+	row, err := client.Enqueue(ctx, HelloArgs{Name: "fast"})
+	require.NoError(t, err)
+
+	select {
+	case id := <-hw.done:
+		require.Equal(t, row.ID, id)
+		require.Less(t, time.Since(start), 500*time.Millisecond)
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for NOTIFY wakeup")
+	}
+}
+
 func TestClientLifecycle(t *testing.T) {
 	_, client, hw := setupIntegration(t)
 	ctx := context.Background()

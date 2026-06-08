@@ -18,6 +18,8 @@ var errLeaderLost = errors.New("fluvio/postgres: leader lease lost")
 
 const leaderLockID int64 = 0x666c7576696f
 
+const leaseDuration = 60 * time.Second
+
 const jobColumns = `id, queue, kind, args, state, priority, attempt, max_attempts,
 	attempted_by, scheduled_at, attempted_at, finalized_at, created_at,
 	error_trace, tags, unique_key, metadata, workflow_id, workflow_task_id, encrypted,
@@ -183,6 +185,11 @@ func (d *Driver) enqueueWithQuerier(ctx context.Context, q pgxQuerier, p driver.
 		}
 		return nil, err
 	}
+	if state == "pending" {
+		if err := d.maybeNotifyQueue(ctx, q, p.Queue); err != nil {
+			return nil, err
+		}
+	}
 	return job, nil
 }
 
@@ -193,6 +200,7 @@ func isUniqueViolation(err error) bool {
 
 type pgxQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 func (d *Driver) Fetch(ctx context.Context, queues []string, workerID string, maxJobs int) ([]*driver.Job, error) {
@@ -229,7 +237,9 @@ func (d *Driver) Fetch(ctx context.Context, queues []string, workerID string, ma
 			return nil, err
 		}
 		if !acquired {
-			_ = d.Nack(ctx, job.ID, fluvio.ErrConcurrencySlotUnavailable, time.Now().UTC().Add(5*time.Second))
+			if err := d.Nack(ctx, job.ID, fluvio.ErrConcurrencySlotUnavailable, time.Now().UTC().Add(5*time.Second)); err != nil {
+				return nil, fmt.Errorf("nack job %d after concurrency slot unavailable: %w", job.ID, err)
+			}
 			continue
 		}
 		if _, err := d.pool.Exec(ctx, `
@@ -544,6 +554,9 @@ func (d *Driver) ReplayDead(ctx context.Context, jobID int64) error {
 	if tag.RowsAffected() == 0 {
 		return fluvio.ErrJobNotFound
 	}
+	if err := d.maybeNotifyQueue(ctx, tx, queue); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
@@ -559,15 +572,34 @@ func (d *Driver) PurgeDead(ctx context.Context, before time.Time) (int64, error)
 }
 
 func (d *Driver) TickScheduled(ctx context.Context, now time.Time) (int64, error) {
-	tag, err := d.pool.Exec(ctx, `
+	rows, err := d.pool.Query(ctx, `
 		UPDATE fluvio_jobs
 		SET state = 'pending'
 		WHERE state = 'scheduled' AND scheduled_at <= $1
+		RETURNING queue
 	`, now)
 	if err != nil {
 		return 0, err
 	}
-	return tag.RowsAffected(), nil
+	defer rows.Close()
+
+	var queues []string
+	for rows.Next() {
+		var queue string
+		if err := rows.Scan(&queue); err != nil {
+			return 0, err
+		}
+		queues = append(queues, queue)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(queues) > 0 {
+		if err := d.maybeNotifyQueues(ctx, d.pool, queues); err != nil {
+			return 0, err
+		}
+	}
+	return int64(len(queues)), nil
 }
 
 func (d *Driver) UniqueJobExists(ctx context.Context, uniqueKey string) (bool, error) {
@@ -597,7 +629,13 @@ func (d *Driver) ResumeQueue(ctx context.Context, queue string) error {
 		VALUES ($1, false, now())
 		ON CONFLICT (queue) DO UPDATE SET paused = false, updated_at = now()
 	`, queue)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := d.maybeNotifyQueue(ctx, d.pool, queue); err != nil {
+		return err
+	}
+	return d.maybeNotifyControl(ctx, d.pool)
 }
 
 func (d *Driver) IsQueuePaused(ctx context.Context, queue string) (bool, error) {
@@ -694,22 +732,29 @@ func (d *Driver) TryAcquireLeader(ctx context.Context) (bool, error) {
 	}
 	var acquired bool
 	err := d.leaderConn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, leaderLockID).Scan(&acquired)
-	return acquired, err
+	if err != nil {
+		d.leaderConn.Release()
+		d.leaderConn = nil
+		return false, err
+	}
+	return acquired, nil
 }
 
 func (d *Driver) VerifyLeader(ctx context.Context) error {
 	if d.useLease {
+		expiry := time.Now().Add(leaseDuration)
 		tag, err := d.pool.Exec(ctx, `
 			UPDATE fluvio_leader
-			SET expires_at = now() + interval '60 seconds'
+			SET expires_at = $2
 			WHERE id = 'singleton' AND elected_by = $1
-		`, d.leaderID)
+		`, d.leaderID, expiry)
 		if err != nil {
 			return err
 		}
 		if tag.RowsAffected() == 0 {
 			return errLeaderLost
 		}
+		d.leaseExpiry = expiry
 		return nil
 	}
 
@@ -755,8 +800,13 @@ func (d *Driver) ReleaseLeader(ctx context.Context) error {
 	return err
 }
 
+// LeaderLeaseExpiry returns when the current lease expires (lease-table mode only).
+func (d *Driver) LeaderLeaseExpiry() time.Time {
+	return d.leaseExpiry
+}
+
 func (d *Driver) tryAcquireLease(ctx context.Context) (bool, error) {
-	expiry := time.Now().Add(60 * time.Second)
+	expiry := time.Now().Add(leaseDuration)
 	tag, err := d.pool.Exec(ctx, `
 		INSERT INTO fluvio_leader (id, elected_by, expires_at)
 		VALUES ('singleton', $1, $2)
@@ -929,7 +979,7 @@ func (d *Driver) RollbackTx(ctx context.Context, tx driver.Tx) error {
 	return pgxTx.Rollback(ctx)
 }
 
-func (d *Driver) UpsertPeriodicJob(ctx context.Context, kind, cron, queue string, maxAttempts int16, args []byte) error {
+func (d *Driver) UpsertPeriodicJob(ctx context.Context, kind, cron, queue string, maxAttempts int16, args []byte, nextRun time.Time) error {
 	if queue == "" {
 		queue = driver.QueueDefault
 	}
@@ -939,15 +989,19 @@ func (d *Driver) UpsertPeriodicJob(ctx context.Context, kind, cron, queue string
 	if len(args) == 0 {
 		args = []byte("{}")
 	}
+	if nextRun.IsZero() {
+		nextRun = time.Now().UTC()
+	}
 	_, err := d.pool.Exec(ctx, `
 		INSERT INTO fluvio_periodic_jobs (kind, cron, args, queue, max_attempts, next_run_at)
-		VALUES ($1, $2, $3, $4, $5, now())
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (kind) DO UPDATE SET
 			cron = EXCLUDED.cron,
 			args = EXCLUDED.args,
 			queue = EXCLUDED.queue,
-			max_attempts = EXCLUDED.max_attempts
-	`, kind, cron, args, queue, maxAttempts)
+			max_attempts = EXCLUDED.max_attempts,
+			next_run_at = EXCLUDED.next_run_at
+	`, kind, cron, args, queue, maxAttempts, nextRun)
 	return err
 }
 

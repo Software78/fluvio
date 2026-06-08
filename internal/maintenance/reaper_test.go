@@ -44,7 +44,7 @@ func (d *reaperDriver) ListDead(context.Context, int, int) ([]*driver.Job, error
 func (d *reaperDriver) ReplayDead(context.Context, int64) error                   { return nil }
 func (d *reaperDriver) PurgeDead(context.Context, time.Time) (int64, error)       { return 0, nil }
 func (d *reaperDriver) TickScheduled(context.Context, time.Time) (int64, error)   { return 0, nil }
-func (d *reaperDriver) UpsertPeriodicJob(context.Context, string, string, string, int16, []byte) error {
+func (d *reaperDriver) UpsertPeriodicJob(context.Context, string, string, string, int16, []byte, time.Time) error {
 	return nil
 }
 func (d *reaperDriver) DuePeriodicJobs(context.Context, time.Time) ([]*driver.PeriodicJob, error) {
@@ -125,4 +125,15 @@ func TestReaperAppliesRetryBackoff(t *testing.T) {
 	defer mu.Unlock()
 	require.False(t, nextAt.IsZero())
 	require.Greater(t, time.Until(nextAt), time.Minute)
+}
+
+func TestReaperStopTwice(t *testing.T) {
+	r := maintenance.NewReaper(&reaperDriver{}, slog.Default(), time.Minute, time.Millisecond, 0, 24*time.Hour,
+		func(int16, time.Duration) time.Duration { return time.Second },
+		func(context.Context, *driver.Job, error, time.Time) error { return nil },
+	)
+	r.Start()
+	time.Sleep(5 * time.Millisecond)
+	r.Stop()
+	r.Stop()
 }

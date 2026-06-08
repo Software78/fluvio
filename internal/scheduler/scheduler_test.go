@@ -45,7 +45,7 @@ func (d *recordingDriver) enqueuedKinds() []string {
 	return append([]string(nil), d.enqueued...)
 }
 
-func (d *recordingDriver) UpsertPeriodicJob(_ context.Context, kind, cron, queue string, maxAttempts int16, args []byte) error {
+func (d *recordingDriver) UpsertPeriodicJob(_ context.Context, kind, cron, queue string, maxAttempts int16, args []byte, nextRun time.Time) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if queue == "" {
@@ -57,11 +57,15 @@ func (d *recordingDriver) UpsertPeriodicJob(_ context.Context, kind, cron, queue
 	if len(args) == 0 {
 		args = []byte("{}")
 	}
+	if nextRun.IsZero() {
+		nextRun = time.Now().UTC()
+	}
 	if existing, ok := d.periodicJobs[kind]; ok {
 		existing.Cron = cron
 		existing.Queue = queue
 		existing.MaxAttempts = maxAttempts
 		existing.Args = args
+		existing.NextRunAt = nextRun
 	} else {
 		d.periodicJobs[kind] = &driver.PeriodicJob{
 			Kind:        kind,
@@ -69,7 +73,7 @@ func (d *recordingDriver) UpsertPeriodicJob(_ context.Context, kind, cron, queue
 			Queue:       queue,
 			MaxAttempts: maxAttempts,
 			Args:        args,
-			NextRunAt:   time.Now().UTC(),
+			NextRunAt:   nextRun,
 		}
 	}
 	return nil
@@ -220,4 +224,20 @@ func TestPeriodicTickNoDoubleEnqueueUnit(t *testing.T) {
 	p.Tick(ctx, now)
 
 	require.Len(t, rd.enqueuedKinds(), 1)
+}
+
+func TestSchedulerStopTwice(t *testing.T) {
+	s := scheduler.New(newRecordingDriver(), slog.Default(), time.Millisecond, 0)
+	s.Start()
+	time.Sleep(5 * time.Millisecond)
+	s.Stop()
+	s.Stop()
+}
+
+func TestPeriodicStopTwice(t *testing.T) {
+	p := scheduler.NewPeriodic(newRecordingDriver(), slog.Default(), time.Millisecond, 0)
+	p.Start()
+	time.Sleep(5 * time.Millisecond)
+	p.Stop()
+	p.Stop()
 }

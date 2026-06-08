@@ -614,7 +614,7 @@ internal/executor/fetch_loop.go
 ```
 
 ```
-tick every FetchInterval (default 500ms)
+wait for FetchInterval, NOTIFY wakeup, or stop
   → if available_slots > 0:
       Fetch(queues, workerID, available_slots)
       → dispatch each job to executor
@@ -622,7 +622,7 @@ tick every FetchInterval (default 500ms)
   → if available_slots == 0: skip fetch, wait for slot release
 ```
 
-Backoff prevents thundering herd when queues are empty. No long-polling in v1 — use `LISTEN/NOTIFY` in v2 for instant job pickup.
+Backoff prevents thundering herd when queues are empty. PostgreSQL LISTEN/NOTIFY wakes idle workers immediately when jobs become pending; `FetchInterval` is the fallback poll. Set `PollOnly: true` when LISTEN is unavailable (e.g. PgBouncer transaction pooling).
 
 ### 6.3 Retry / backoff
 
@@ -1029,7 +1029,7 @@ These should be resolved before or during phase 1.
 | 3 | **Advisory lock vs lease table** | Advisory lock = simpler; lease table = PgBouncer-compatible | Default advisory lock, env flag for lease table fallback |
 | 4 | **`database/sql` support** | pgx only, or also `database/sql`? | pgx only in v1; `database/sql` driver in v1.1 (lets Bun/GORM users do transactional enqueue) |
 | 5 | **Job args encoding** | JSON (JSONB column) only, or also msgpack? | JSONB — inspectable in Postgres, no perf concern at job scale |
-| 6 | **LISTEN/NOTIFY** | Poll-only v1, or add pub/sub for instant pickup? | Poll-only v1; `LISTEN/NOTIFY` in v2 for sub-100ms job pickup latency |
+| 6 | **LISTEN/NOTIFY** | Poll-only v1, or add pub/sub for instant pickup? | **Shipped** — hybrid NOTIFY + poll; `PollOnly` for PgBouncer |
 | 7 | **Pro licensing** | Source-available, private Go module, binary-only | Private Go module (same as River Pro); easiest to enforce, no WASM/binary hassle |
 | 8 | **Sequence waiting state** | New enum value vs metadata field | Metadata field — avoids migration on all envs when Pro is added; cast to `scheduled` with far-future `scheduled_at` is another option |
 | 9 | **Error trace format** | Array of objects vs flat string | JSONB array `[{attempt, error, at, worker}]` — queryable and inspection-friendly |

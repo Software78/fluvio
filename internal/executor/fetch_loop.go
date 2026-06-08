@@ -18,9 +18,10 @@ type FetchLoop struct {
 	executor      *Executor
 	handler       JobHandler
 	logger        *slog.Logger
+	wake          <-chan struct{}
 	stopCh        chan struct{}
+	stopOnce      sync.Once
 	doneCh        chan struct{}
-	mu            sync.Mutex
 	backoff       time.Duration
 	maxBackoff    time.Duration
 }
@@ -33,6 +34,7 @@ func NewFetchLoop(
 	exec *Executor,
 	handler JobHandler,
 	logger *slog.Logger,
+	wake <-chan struct{},
 ) *FetchLoop {
 	return &FetchLoop{
 		driver:     d,
@@ -42,6 +44,7 @@ func NewFetchLoop(
 		executor:   exec,
 		handler:    handler,
 		logger:     logger,
+		wake:       wake,
 		stopCh:     make(chan struct{}),
 		doneCh:     make(chan struct{}),
 		maxBackoff: 5 * time.Second,
@@ -53,7 +56,7 @@ func (f *FetchLoop) Start() {
 }
 
 func (f *FetchLoop) Stop() {
-	close(f.stopCh)
+	f.stopOnce.Do(func() { close(f.stopCh) })
 	<-f.doneCh
 }
 
@@ -64,11 +67,31 @@ func (f *FetchLoop) run() {
 		if f.tick(&sleep) {
 			return
 		}
+		if stop, wake := f.wait(sleep); stop {
+			return
+		} else if wake {
+			sleep = f.interval
+		}
+	}
+}
+
+func (f *FetchLoop) wait(sleep time.Duration) (stop, wake bool) {
+	if f.wake == nil {
 		select {
 		case <-f.stopCh:
-			return
+			return true, false
 		case <-time.After(sleep):
+			return false, false
 		}
+	}
+	select {
+	case <-f.stopCh:
+		return true, false
+	case <-f.wake:
+		f.backoff = 0
+		return false, true
+	case <-time.After(sleep):
+		return false, false
 	}
 }
 
@@ -82,9 +105,7 @@ func (f *FetchLoop) tick(sleep *time.Duration) (stop bool) {
 	ctx := context.Background()
 	jobs, err := f.driver.Fetch(ctx, f.queues, f.workerID, slots)
 	if errors.Is(err, driver.ErrQueuesPaused) {
-		f.mu.Lock()
 		f.backoff = 0
-		f.mu.Unlock()
 		*sleep = f.interval
 		return false
 	}
@@ -95,7 +116,6 @@ func (f *FetchLoop) tick(sleep *time.Duration) (stop bool) {
 	}
 
 	if len(jobs) == 0 {
-		f.mu.Lock()
 		if f.backoff == 0 {
 			f.backoff = f.interval
 		} else if f.backoff < f.maxBackoff {
@@ -105,13 +125,10 @@ func (f *FetchLoop) tick(sleep *time.Duration) (stop bool) {
 			}
 		}
 		*sleep = f.backoff
-		f.mu.Unlock()
 		return false
 	}
 
-	f.mu.Lock()
 	f.backoff = 0
-	f.mu.Unlock()
 	*sleep = f.interval
 
 	for _, job := range jobs {

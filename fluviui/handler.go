@@ -1,5 +1,5 @@
-// Package fluviui provides an unauthenticated HTTP API for queue monitoring and control.
-// Deploy behind a reverse proxy with authentication, or wrap handlers with WithMiddleware.
+// Package fluviui provides an HTTP API for queue monitoring and control.
+// Use WithMiddleware to add authentication (for example basic auth or bearer tokens).
 package fluviui
 
 import (

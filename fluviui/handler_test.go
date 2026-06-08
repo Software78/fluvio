@@ -227,6 +227,17 @@ func TestCORSOptionsPreflight(t *testing.T) {
 	require.Empty(t, body)
 }
 
+func TestJobDetailRejectsInvalidID(t *testing.T) {
+	h := handlerFor(mockClient{})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/fluvio/api/jobs/123abc")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
 func TestCORSOnSSEEndpoint(t *testing.T) {
 	h := handlerFor(mockClient{})
 	srv := httptest.NewServer(h)

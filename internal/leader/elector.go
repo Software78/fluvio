@@ -3,6 +3,7 @@ package leader
 import (
 	"context"
 	"log/slog"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -21,6 +22,7 @@ type Elector struct {
 	interval    time.Duration
 	renew       time.Duration
 	stopCh      chan struct{}
+	stopOnce    sync.Once
 	doneCh      chan struct{}
 	mu          sync.Mutex
 	isLeader    bool
@@ -46,14 +48,24 @@ func (e *Elector) Start() {
 }
 
 func (e *Elector) Stop() {
-	close(e.stopCh)
-	e.stopRenewLoop()
+	e.stopOnce.Do(func() { close(e.stopCh) })
+	e.drainRenewLoop()
 	<-e.doneCh
 	_ = e.driver.ReleaseLeader(context.Background())
 }
 
 func (e *Elector) run() {
 	defer close(e.doneCh)
+
+	if e.interval > 0 {
+		jitter := time.Duration(rand.Int63n(int64(e.interval)))
+		select {
+		case <-e.stopCh:
+			return
+		case <-time.After(jitter):
+		}
+	}
+
 	ticker := time.NewTicker(e.interval)
 	defer ticker.Stop()
 
@@ -93,12 +105,12 @@ func (e *Elector) run() {
 }
 
 func (e *Elector) startRenewLoop() {
+	e.drainRenewLoop()
 	e.renewMu.Lock()
-	defer e.renewMu.Unlock()
-	e.stopRenewLoopLocked()
 	ctx, cancel := context.WithCancel(context.Background())
 	e.renewCancel = cancel
 	e.renewWG.Add(1)
+	e.renewMu.Unlock()
 	go func() {
 		defer e.renewWG.Done()
 		e.renewLoop(ctx)
@@ -107,37 +119,49 @@ func (e *Elector) startRenewLoop() {
 
 func (e *Elector) cancelRenewLoop() {
 	e.renewMu.Lock()
-	defer e.renewMu.Unlock()
-	if e.renewCancel != nil {
-		e.renewCancel()
+	cancel := e.renewCancel
+	e.renewMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 
-func (e *Elector) stopRenewLoop() {
+func (e *Elector) drainRenewLoop() {
 	e.renewMu.Lock()
-	defer e.renewMu.Unlock()
-	e.stopRenewLoopLocked()
+	cancel := e.renewCancel
+	e.renewCancel = nil
+	e.renewMu.Unlock()
+	if cancel != nil {
+		cancel()
+		e.renewWG.Wait()
+	}
 }
 
-func (e *Elector) stopRenewLoopLocked() {
-	if e.renewCancel != nil {
-		e.renewCancel()
-		e.renewWG.Wait()
-		e.renewCancel = nil
+type leaseExpiryReader interface {
+	LeaderLeaseExpiry() time.Time
+}
+
+func (e *Elector) renewWait() time.Duration {
+	wait := e.renew
+	if r, ok := e.driver.(leaseExpiryReader); ok {
+		if until := time.Until(r.LeaderLeaseExpiry()); until > 0 && until < e.renew {
+			wait = until / 2
+			if wait < time.Second {
+				wait = time.Second
+			}
+		}
 	}
+	return wait
 }
 
 func (e *Elector) renewLoop(ctx context.Context) {
-	ticker := time.NewTicker(e.renew)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case <-e.stopCh:
 			return
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-time.After(e.renewWait()):
 			e.mu.Lock()
 			if !e.isLeader {
 				e.mu.Unlock()

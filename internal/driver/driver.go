@@ -96,7 +96,7 @@ type Driver interface {
 
 	TickScheduled(ctx context.Context, now time.Time) (int64, error)
 
-	UpsertPeriodicJob(ctx context.Context, kind, cron, queue string, maxAttempts int16, args []byte) error
+	UpsertPeriodicJob(ctx context.Context, kind, cron, queue string, maxAttempts int16, args []byte, nextRun time.Time) error
 	DuePeriodicJobs(ctx context.Context, now time.Time) ([]*PeriodicJob, error)
 	UpdatePeriodicJobNextRun(ctx context.Context, kind string, nextRun time.Time) error
 	UpdatePeriodicJobNextRunTx(ctx context.Context, tx Tx, kind string, nextRun time.Time) (bool, error)

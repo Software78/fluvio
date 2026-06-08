@@ -3,6 +3,7 @@ package workerregistry
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/software78/fluvio/internal/driver"
@@ -18,6 +19,7 @@ type Registry struct {
 	interval time.Duration
 	logger   *slog.Logger
 	stopCh   chan struct{}
+	stopOnce sync.Once
 	doneCh   chan struct{}
 }
 
@@ -41,7 +43,7 @@ func (r *Registry) Start() {
 }
 
 func (r *Registry) Stop() {
-	close(r.stopCh)
+	r.stopOnce.Do(func() { close(r.stopCh) })
 	<-r.doneCh
 	ctx, cancel := context.WithTimeout(context.Background(), heartbeatTimeout)
 	defer cancel()

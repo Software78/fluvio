@@ -48,17 +48,17 @@ func TestMigrateUpDownStatus(t *testing.T) {
 
 	status, err := d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 11)
+	require.Len(t, status, 12)
 
 	require.NoError(t, d.MigrateDown(ctx, 1))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 10)
+	require.Len(t, status, 11)
 
 	require.NoError(t, d.Migrate(ctx))
 	status, err = d.MigrationStatus(ctx)
 	require.NoError(t, err)
-	require.Len(t, status, 11)
+	require.Len(t, status, 12)
 }
 
 func TestEnqueueFetchAck(t *testing.T) {
@@ -225,6 +225,43 @@ func TestEnqueueMany(t *testing.T) {
 	require.Len(t, jobs, 100)
 }
 
+func TestPollOnlySubscribeDisabled(t *testing.T) {
+	_, d := setupPostgres(t)
+	ctx := context.Background()
+	d.ConfigureNotify(true, 0)
+
+	_, err := d.Subscribe(ctx, []string{"default"})
+	require.Error(t, err)
+}
+
+func TestTickScheduledNotify(t *testing.T) {
+	_, d := setupPostgres(t)
+	ctx := context.Background()
+
+	sub, err := d.Subscribe(ctx, []string{"default"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Close() })
+
+	dueTime := time.Now().Add(5 * time.Second)
+	job, err := d.Enqueue(ctx, driver.EnqueueParams{
+		Kind:        "due",
+		Args:        []byte(`{}`),
+		ScheduledAt: &dueTime,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "scheduled", job.State)
+
+	n, err := d.TickScheduled(ctx, dueTime.Add(time.Second))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n)
+
+	select {
+	case <-sub.Wake():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected NOTIFY after TickScheduled")
+	}
+}
+
 func TestTickScheduled(t *testing.T) {
 	_, d := setupPostgres(t)
 	ctx := context.Background()
@@ -305,7 +342,8 @@ func TestPeriodicJobs(t *testing.T) {
 	_, d := setupPostgres(t)
 	ctx := context.Background()
 
-	require.NoError(t, d.UpsertPeriodicJob(ctx, "daily-report", "0 9 * * *", "default", 3, []byte(`{"format":"pdf"}`)))
+	nextRun := time.Date(2030, 1, 15, 9, 0, 0, 0, time.UTC)
+	require.NoError(t, d.UpsertPeriodicJob(ctx, "daily-report", "0 9 * * *", "default", 3, []byte(`{"format":"pdf"}`), nextRun))
 
 	jobs, err := d.ListPeriodicJobs(ctx)
 	require.NoError(t, err)
@@ -316,16 +354,16 @@ func TestPeriodicJobs(t *testing.T) {
 	require.Equal(t, int16(3), jobs[0].MaxAttempts)
 	require.JSONEq(t, `{"format":"pdf"}`, string(jobs[0].Args))
 	require.False(t, jobs[0].Paused)
+	require.Equal(t, nextRun, jobs[0].NextRunAt)
 
-	// Upsert updates cron/args without resetting next_run_at.
-	nextRun := jobs[0].NextRunAt
-	require.NoError(t, d.UpsertPeriodicJob(ctx, "daily-report", "0 10 * * *", "critical", 5, []byte(`{"format":"csv"}`)))
+	updatedNextRun := time.Date(2030, 2, 1, 10, 0, 0, 0, time.UTC)
+	require.NoError(t, d.UpsertPeriodicJob(ctx, "daily-report", "0 10 * * *", "critical", 5, []byte(`{"format":"csv"}`), updatedNextRun))
 	jobs, err = d.ListPeriodicJobs(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "0 10 * * *", jobs[0].Cron)
 	require.Equal(t, "critical", jobs[0].Queue)
 	require.Equal(t, int16(5), jobs[0].MaxAttempts)
-	require.Equal(t, nextRun, jobs[0].NextRunAt)
+	require.Equal(t, updatedNextRun, jobs[0].NextRunAt)
 
 	require.NoError(t, d.PausePeriodicJob(ctx, "daily-report"))
 	jobs, err = d.ListPeriodicJobs(ctx)

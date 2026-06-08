@@ -97,6 +97,17 @@ func (d *Driver) CompleteWorkflowTask(ctx context.Context, tx driver.Tx, workflo
 }
 
 func (d *Driver) completeWorkflowTaskTx(ctx context.Context, tx pgx.Tx, workflowID, taskID string) error {
+	var wfState string
+	err := tx.QueryRow(ctx, `
+		SELECT state FROM fluvio_workflows WHERE id = $1
+	`, workflowID).Scan(&wfState)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fluvio.ErrWorkflowNotFound
+		}
+		return err
+	}
+
 	tag, err := tx.Exec(ctx, `
 		UPDATE fluvio_workflow_tasks
 		SET state = 'completed'
@@ -107,6 +118,10 @@ func (d *Driver) completeWorkflowTaskTx(ctx context.Context, tx pgx.Tx, workflow
 	}
 	if tag.RowsAffected() == 0 {
 		return fluvio.ErrWorkflowNotFound
+	}
+
+	if wfState == "failed" || wfState == "cancelled" {
+		return nil
 	}
 
 	rows, err := tx.Query(ctx, `
@@ -184,10 +199,23 @@ func (d *Driver) failWorkflowTaskTx(ctx context.Context, tx pgx.Tx, workflowID, 
 		return fluvio.ErrWorkflowNotFound
 	}
 	if _, err := tx.Exec(ctx, `
+		UPDATE fluvio_jobs j
+		SET state = 'cancelled', finalized_at = now()
+		FROM fluvio_workflow_tasks t
+		WHERE t.workflow_id = $1
+		  AND t.task_id <> $2
+		  AND t.state IN ('pending', 'running')
+		  AND t.job_id IS NOT NULL
+		  AND j.id = t.job_id
+		  AND j.state IN ('pending', 'scheduled')
+	`, workflowID, taskID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
 		UPDATE fluvio_workflow_tasks
 		SET state = 'cancelled'
-		WHERE workflow_id = $1 AND state = 'waiting'
-	`, workflowID); err != nil {
+		WHERE workflow_id = $1 AND task_id <> $2 AND state IN ('waiting', 'pending', 'running')
+	`, workflowID, taskID); err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `

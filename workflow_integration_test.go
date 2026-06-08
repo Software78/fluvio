@@ -178,3 +178,26 @@ func TestWorkflowFailCancelsDependents(t *testing.T) {
 			taskState(wfState, "D") == "cancelled"
 	}, 10*time.Second, 100*time.Millisecond)
 }
+
+func TestWorkflowFailCancelsParallelSiblings(t *testing.T) {
+	_, client, _ := setupWorkflowIntegration(t)
+	ctx := context.Background()
+
+	wf := fluvio.NewWorkflow().
+		Task("A", wfFailArgs{}, fluvio.WithTaskEnqueueOptions(fluvio.WithMaxAttempts(1))).
+		Task("B", wfTaskArgs{Task: "B"})
+
+	wfID, err := client.EnqueueWorkflow(ctx, wf)
+	require.NoError(t, err)
+
+	require.NoError(t, client.Start(ctx))
+	t.Cleanup(func() { client.Stop() })
+
+	require.Eventually(t, func() bool {
+		wfState, err := client.GetWorkflow(ctx, wfID)
+		if err != nil {
+			return false
+		}
+		return wfState.State == "failed" && taskState(wfState, "B") == "cancelled"
+	}, 10*time.Second, 100*time.Millisecond)
+}

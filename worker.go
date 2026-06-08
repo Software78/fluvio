@@ -150,17 +150,19 @@ func NewWorkers() *Workers {
 // AddWorker registers a worker for a job kind. Call before NewClient/Start;
 // concurrent AddWorker after Start is not supported.
 func AddWorker[T JobArgs](w *Workers, worker Worker[T]) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.started.Load() {
 		panic("fluvio: AddWorker after Client.Start is not supported")
 	}
 	var zero T
 	kind := zero.Kind()
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	w.byKind[kind] = &typedWorker[T]{kindName: kind, worker: worker}
 }
 
 func (w *Workers) markStarted() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.started.Store(true)
 }
 

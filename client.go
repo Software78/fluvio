@@ -632,7 +632,7 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 		args = plaintext
 	}
 
-	// Partitioned limits acquire here; global limits acquire in driver Fetch. All releases in Ack/Nack.
+	// Partitioned limits acquire here; global limits acquire atomically in driver Fetch SQL. All releases in Ack/Nack.
 	if fn := c.partitionKeyFn(dJob.Kind); fn != nil {
 		partitionKey := fn(args)
 		acquired, err := c.driver.AcquireConcurrencySlotForJob(ctx, dJob.ID, dJob.Kind, partitionKey)

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -517,4 +518,88 @@ func TestPeriodicJobs(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, claimed)
 	require.NoError(t, d.RollbackTx(ctx, tx))
+}
+
+func assertSlotInvariant(t *testing.T, pool *pgxpool.Pool, kind string) {
+	t.Helper()
+	ctx := context.Background()
+
+	var running int
+	err := pool.QueryRow(ctx, `
+		SELECT running FROM fluvio_concurrency_slots
+		WHERE kind = $1 AND partition_key = ''
+	`, kind).Scan(&running)
+	require.NoError(t, err)
+
+	var held int
+	err = pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM fluvio_jobs
+		WHERE kind = $1 AND state = 'running' AND concurrency_slot_key IS NOT NULL
+	`, kind).Scan(&held)
+	require.NoError(t, err)
+	require.Equal(t, held, running, "slot running count must match jobs holding slots")
+}
+
+func TestFetchMidCrashSlotConsistency(t *testing.T) {
+	pool, d := setupPostgres(t)
+	ctx := context.Background()
+	const kind = "crash_job"
+
+	require.NoError(t, d.SetConcurrencyLimit(ctx, driver.ConcurrencyLimit{
+		Kind:          kind,
+		MaxConcurrent: 1,
+	}))
+	_, err := d.Enqueue(ctx, driver.EnqueueParams{Kind: kind, Args: []byte(`{}`)})
+	require.NoError(t, err)
+
+	standalone, err := pgx.Connect(ctx, pool.Config().ConnString())
+	require.NoError(t, err)
+	defer standalone.Close(ctx)
+
+	pid := standalone.PgConn().PID()
+	globalKinds := []string{kind}
+	errCh := make(chan error, 1)
+	go func() {
+		_, qerr := standalone.Query(ctx, postgres.FetchJobsSQLWithDelay(3),
+			[]string{"default"}, 1, "crash-worker", globalKinds)
+		errCh <- qerr
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	_, err = pool.Exec(ctx, `SELECT pg_terminate_backend($1)`, pid)
+	require.NoError(t, err)
+
+	select {
+	case err = <-errCh:
+		require.Error(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for fetch to fail")
+	}
+
+	stuck, err := d.StuckJobs(ctx, time.Minute)
+	require.NoError(t, err)
+	for _, job := range stuck {
+		require.NoError(t, d.Nack(ctx, job.ID, errTest, time.Now()))
+	}
+
+	assertSlotInvariant(t, pool, kind)
+
+	var state string
+	require.NoError(t, pool.QueryRow(ctx, `SELECT state FROM fluvio_jobs WHERE kind = $1`, kind).Scan(&state))
+	require.Equal(t, "pending", state)
+
+	jobs, err := d.Fetch(ctx, []string{"default"}, "crash-worker", 1)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	assertSlotInvariant(t, pool, kind)
+
+	_, err = pool.Exec(ctx, `UPDATE fluvio_jobs SET attempted_at = now() - interval '1 hour' WHERE id = $1`, jobs[0].ID)
+	require.NoError(t, err)
+
+	stuck, err = d.StuckJobs(ctx, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, stuck, 1)
+	require.NoError(t, d.Nack(ctx, stuck[0].ID, errTest, time.Now()))
+
+	assertSlotInvariant(t, pool, kind)
 }

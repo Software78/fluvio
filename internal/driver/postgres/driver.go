@@ -226,37 +226,12 @@ func (d *Driver) Fetch(ctx context.Context, queues []string, workerID string, ma
 		return nil, driver.ErrQueuesPaused
 	}
 
-	rows, err := d.pool.Query(ctx, fetchJobsSQL, activeQueues, maxJobs, workerID)
+	rows, err := d.pool.Query(ctx, fetchJobsSQL, activeQueues, maxJobs, workerID, d.globalConcurrencyKinds())
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	jobs, err := scanJobs(rows)
-	if err != nil {
-		return nil, err
-	}
-
-	var out []*driver.Job
-	for _, job := range jobs {
-		if !d.isGlobalConcurrencyKind(job.Kind) {
-			out = append(out, job)
-			continue
-		}
-		acquired, err := d.AcquireConcurrencySlotForJob(ctx, job.ID, job.Kind, "")
-		if err != nil {
-			return nil, err
-		}
-		if !acquired {
-			if err := d.Nack(ctx, job.ID, fluvio.ErrConcurrencySlotUnavailable, time.Now().UTC().Add(5*time.Second)); err != nil {
-				return nil, fmt.Errorf("nack job %d after concurrency slot unavailable: %w", job.ID, err)
-			}
-			continue
-		}
-		key := ""
-		job.ConcurrencySlotKey = &key
-		out = append(out, job)
-	}
-	return out, nil
+	return scanJobs(rows)
 }
 
 func (d *Driver) filterPausedQueues(ctx context.Context, queues []string) ([]string, error) {

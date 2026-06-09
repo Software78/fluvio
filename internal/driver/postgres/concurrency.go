@@ -30,6 +30,21 @@ func (d *Driver) isGlobalConcurrencyKind(kind string) bool {
 	return ok && !cfg.partitioned
 }
 
+func (d *Driver) globalConcurrencyKinds() []string {
+	d.concurrencyMu.RLock()
+	defer d.concurrencyMu.RUnlock()
+	if len(d.concurrencyLimits) == 0 {
+		return nil
+	}
+	var kinds []string
+	for kind, cfg := range d.concurrencyLimits {
+		if !cfg.partitioned {
+			kinds = append(kinds, kind)
+		}
+	}
+	return kinds
+}
+
 func (d *Driver) SetConcurrencyLimit(ctx context.Context, limit driver.ConcurrencyLimit) error {
 	if limit.Kind == "" {
 		return fmt.Errorf("%w: kind is required", fluvio.ErrInvalidConfig)

@@ -22,6 +22,8 @@ type Reaper struct {
 	maxRetryDelay time.Duration
 	retryDelay    retryDelayFunc
 	nack          NackFunc
+	mu            sync.Mutex
+	running       bool
 	stopCh        chan struct{}
 	stopOnce      sync.Once
 	doneCh        chan struct{}
@@ -52,16 +54,37 @@ func NewReaper(
 }
 
 func (r *Reaper) Start() {
+	r.mu.Lock()
+	if r.running {
+		r.mu.Unlock()
+		return
+	}
+	r.stopCh = make(chan struct{})
+	r.doneCh = make(chan struct{})
+	r.stopOnce = sync.Once{}
+	r.running = true
+	r.mu.Unlock()
 	go r.run()
 }
 
 func (r *Reaper) Stop() {
+	r.mu.Lock()
+	if !r.running {
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
 	r.stopOnce.Do(func() { close(r.stopCh) })
 	<-r.doneCh
 }
 
 func (r *Reaper) run() {
-	defer close(r.doneCh)
+	defer func() {
+		r.mu.Lock()
+		r.running = false
+		r.mu.Unlock()
+		close(r.doneCh)
+	}()
 	if r.startupDelay > 0 {
 		select {
 		case <-r.stopCh:

@@ -162,10 +162,30 @@ func TestSchedulerStopTwice(t *testing.T) {
 	s.Stop()
 }
 
+func TestSchedulerRestartAfterStop(t *testing.T) {
+	s := scheduler.New(newRecordingDriver(), slog.Default(), time.Millisecond, 0)
+	s.Start()
+	time.Sleep(5 * time.Millisecond)
+	s.Stop()
+	s.Start()
+	time.Sleep(5 * time.Millisecond)
+	s.Stop()
+}
+
 func TestPeriodicStopTwice(t *testing.T) {
 	p := scheduler.NewPeriodic(newRecordingDriver(), slog.Default(), time.Millisecond, 0)
 	p.Start()
 	time.Sleep(5 * time.Millisecond)
 	p.Stop()
+	p.Stop()
+}
+
+func TestPeriodicRestartAfterStop(t *testing.T) {
+	p := scheduler.NewPeriodic(newRecordingDriver(), slog.Default(), time.Millisecond, 0)
+	p.Start()
+	time.Sleep(5 * time.Millisecond)
+	p.Stop()
+	p.Start()
+	time.Sleep(5 * time.Millisecond)
 	p.Stop()
 }

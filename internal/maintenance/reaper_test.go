@@ -59,3 +59,16 @@ func TestReaperStopTwice(t *testing.T) {
 	r.Stop()
 	r.Stop()
 }
+
+func TestReaperRestartAfterStop(t *testing.T) {
+	r := maintenance.NewReaper(&reaperDriver{}, slog.Default(), time.Minute, time.Millisecond, 0, 24*time.Hour,
+		func(int16, time.Duration) time.Duration { return time.Second },
+		func(context.Context, *driver.Job, error, time.Time) error { return nil },
+	)
+	r.Start()
+	time.Sleep(5 * time.Millisecond)
+	r.Stop()
+	r.Start()
+	time.Sleep(5 * time.Millisecond)
+	r.Stop()
+}

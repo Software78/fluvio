@@ -17,6 +17,8 @@ type Periodic struct {
 	startupDelay time.Duration
 	parser       cron.Parser
 	schedules    sync.Map // kind -> cron.Schedule
+	mu           sync.Mutex
+	running      bool
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	doneCh       chan struct{}
@@ -51,16 +53,37 @@ func (p *Periodic) Register(ctx context.Context, cronExpr, kind string, args []b
 }
 
 func (p *Periodic) Start() {
+	p.mu.Lock()
+	if p.running {
+		p.mu.Unlock()
+		return
+	}
+	p.stopCh = make(chan struct{})
+	p.doneCh = make(chan struct{})
+	p.stopOnce = sync.Once{}
+	p.running = true
+	p.mu.Unlock()
 	go p.run()
 }
 
 func (p *Periodic) Stop() {
+	p.mu.Lock()
+	if !p.running {
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Unlock()
 	p.stopOnce.Do(func() { close(p.stopCh) })
 	<-p.doneCh
 }
 
 func (p *Periodic) run() {
-	defer close(p.doneCh)
+	defer func() {
+		p.mu.Lock()
+		p.running = false
+		p.mu.Unlock()
+		close(p.doneCh)
+	}()
 	if p.startupDelay > 0 {
 		select {
 		case <-p.stopCh:

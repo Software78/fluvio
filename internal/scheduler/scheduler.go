@@ -14,6 +14,8 @@ type Scheduler struct {
 	logger       *slog.Logger
 	interval     time.Duration
 	startupDelay time.Duration
+	mu           sync.Mutex
+	running      bool
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	doneCh       chan struct{}
@@ -34,16 +36,37 @@ func New(d driver.SchedulerDriver, logger *slog.Logger, interval, startupDelay t
 }
 
 func (s *Scheduler) Start() {
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		return
+	}
+	s.stopCh = make(chan struct{})
+	s.doneCh = make(chan struct{})
+	s.stopOnce = sync.Once{}
+	s.running = true
+	s.mu.Unlock()
 	go s.run()
 }
 
 func (s *Scheduler) Stop() {
+	s.mu.Lock()
+	if !s.running {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
 	s.stopOnce.Do(func() { close(s.stopCh) })
 	<-s.doneCh
 }
 
 func (s *Scheduler) run() {
-	defer close(s.doneCh)
+	defer func() {
+		s.mu.Lock()
+		s.running = false
+		s.mu.Unlock()
+		close(s.doneCh)
+	}()
 	if s.startupDelay > 0 {
 		select {
 		case <-s.stopCh:

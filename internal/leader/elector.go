@@ -144,11 +144,21 @@ type leaseExpiryReader interface {
 func (e *Elector) renewWait() time.Duration {
 	wait := e.renew
 	if r, ok := e.driver.(leaseExpiryReader); ok {
-		if until := time.Until(r.LeaderLeaseExpiry()); until > 0 && until < e.renew {
-			wait = until / 2
-			if wait < time.Second {
-				wait = time.Second
-			}
+		expiry := r.LeaderLeaseExpiry()
+		if expiry.IsZero() {
+			return wait
+		}
+		until := time.Until(expiry)
+		if until <= 0 {
+			return time.Second
+		}
+		// Renew well before expiry; use one third of remaining lease time.
+		third := until / 3
+		if third < time.Second {
+			third = time.Second
+		}
+		if third < wait {
+			wait = third
 		}
 	}
 	return wait

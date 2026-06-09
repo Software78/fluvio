@@ -708,8 +708,12 @@ func (d *Driver) TryAcquireLeader(ctx context.Context) (bool, error) {
 	defer d.leaderMu.Unlock()
 
 	if d.useLease {
-		return d.tryAcquireLease(ctx)
+		return d.tryAcquireLeaseLocked(ctx)
 	}
+	return d.tryAcquireAdvisoryLock(ctx)
+}
+
+func (d *Driver) tryAcquireAdvisoryLock(ctx context.Context) (bool, error) {
 	if d.leaderConn == nil {
 		conn, err := d.pool.Acquire(ctx)
 		if err != nil {
@@ -728,35 +732,47 @@ func (d *Driver) TryAcquireLeader(ctx context.Context) (bool, error) {
 }
 
 func (d *Driver) VerifyLeader(ctx context.Context) error {
+	d.leaderMu.Lock()
+	defer d.leaderMu.Unlock()
+
 	if d.useLease {
-		expiry := time.Now().Add(leaseDuration)
-		tag, err := d.pool.Exec(ctx, `
-			UPDATE fluvio_leader
-			SET expires_at = $2
-			WHERE id = 'singleton' AND elected_by = $1
-		`, d.leaderID, expiry)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
+		return d.verifyLeaseLocked(ctx)
+	}
+	return d.verifyAdvisoryLock(ctx)
+}
+
+func (d *Driver) verifyLeaseLocked(ctx context.Context) error {
+	expiry := time.Now().Add(leaseDuration)
+	tag, err := d.pool.Exec(ctx, `
+		UPDATE fluvio_leader
+		SET expires_at = $2
+		WHERE id = 'singleton' AND elected_by = $1
+	`, d.leaderID, expiry)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errLeaderLost
+	}
+	d.leaseExpiry = expiry
+	return nil
+}
+
+func (d *Driver) verifyAdvisoryLock(ctx context.Context) error {
+	if d.leaderConn == nil {
+		return errLeaderLost
+	}
+	if err := d.leaderConn.Ping(ctx); err != nil {
+		d.leaderConn.Release()
+		d.leaderConn = nil
+		acquired, acquireErr := d.tryAcquireAdvisoryLock(ctx)
+		if acquireErr != nil || !acquired {
 			return errLeaderLost
 		}
-		d.leaseExpiry = expiry
 		return nil
 	}
-
-	d.leaderMu.Lock()
-	conn := d.leaderConn
-	d.leaderMu.Unlock()
-
-	if conn == nil {
-		return errLeaderLost
-	}
-	if err := conn.Ping(ctx); err != nil {
-		return errLeaderLost
-	}
 	var held int
-	err := conn.QueryRow(ctx, `
+	err := d.leaderConn.QueryRow(ctx, `
 		SELECT COUNT(*) FROM pg_locks
 		WHERE locktype = 'advisory' AND classid = 0 AND objid = $1
 		  AND pid = pg_backend_pid()
@@ -765,7 +781,12 @@ func (d *Driver) VerifyLeader(ctx context.Context) error {
 		return errLeaderLost
 	}
 	if held == 0 {
-		return errLeaderLost
+		d.leaderConn.Release()
+		d.leaderConn = nil
+		acquired, acquireErr := d.tryAcquireAdvisoryLock(ctx)
+		if acquireErr != nil || !acquired {
+			return errLeaderLost
+		}
 	}
 	return nil
 }
@@ -792,7 +813,7 @@ func (d *Driver) LeaderLeaseExpiry() time.Time {
 	return d.leaseExpiry
 }
 
-func (d *Driver) tryAcquireLease(ctx context.Context) (bool, error) {
+func (d *Driver) tryAcquireLeaseLocked(ctx context.Context) (bool, error) {
 	expiry := time.Now().Add(leaseDuration)
 	tag, err := d.pool.Exec(ctx, `
 		INSERT INTO fluvio_leader (id, elected_by, expires_at)
@@ -820,7 +841,13 @@ func (d *Driver) tryAcquireLease(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return electedBy == d.leaderID, nil
+	if electedBy != d.leaderID {
+		return false, nil
+	}
+	if err := d.verifyLeaseLocked(ctx); err != nil {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (d *Driver) StuckJobs(ctx context.Context, timeout time.Duration) ([]*driver.Job, error) {

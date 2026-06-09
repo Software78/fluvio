@@ -525,29 +525,47 @@ func (d *Driver) ReplayDead(ctx context.Context, jobID int64) error {
 		return err
 	}
 
-	var priority, maxAttempts int16
+	var workflowID, workflowTaskID *string
 	err = tx.QueryRow(ctx, `
-		SELECT priority, max_attempts
-		FROM fluvio_jobs
-		WHERE id = $1
-	`, jobID).Scan(&priority, &maxAttempts)
+		UPDATE fluvio_jobs
+		SET
+			queue = $2,
+			kind = $3,
+			args = $4,
+			metadata = $5,
+			tags = $6,
+			encrypted = $7,
+			state = 'pending',
+			attempt = 0,
+			scheduled_at = now(),
+			finalized_at = NULL,
+			attempted_at = NULL,
+			attempted_by = '{}',
+			error_trace = NULL,
+			concurrency_slot_key = NULL
+		WHERE id = $1 AND state = 'dead'
+		RETURNING queue, workflow_id, workflow_task_id
+	`, jobID, queue, kind, args, metadata, tags, encrypted).Scan(&queue, &workflowID, &workflowTaskID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			priority = 1
-			maxAttempts = 3
-		} else {
-			return err
+			return fluvio.ErrJobNotFound
 		}
+		return err
 	}
 
-	_, err = tx.Exec(ctx, `
-		INSERT INTO fluvio_jobs (
-			queue, kind, args, state, priority, max_attempts,
-			scheduled_at, tags, metadata, encrypted
-		) VALUES ($1, $2, $3, 'pending', $4, $5, now(), $6, $7, $8)
-	`, queue, kind, args, priority, maxAttempts, tags, metadata, encrypted)
-	if err != nil {
-		return err
+	if workflowID != nil && workflowTaskID != nil {
+		if _, err := tx.Exec(ctx, `
+			UPDATE fluvio_workflow_tasks
+			SET state = 'pending'
+			WHERE workflow_id = $1 AND task_id = $2 AND job_id = $3 AND state = 'failed'
+		`, *workflowID, *workflowTaskID, jobID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE fluvio_workflows SET state = 'running' WHERE id = $1 AND state = 'failed'
+		`, *workflowID); err != nil {
+			return err
+		}
 	}
 
 	tag, err := tx.Exec(ctx, `

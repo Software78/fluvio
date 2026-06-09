@@ -86,21 +86,27 @@ func TestDLQExhaustReplayPurge(t *testing.T) {
 
 	require.NoError(t, client.ReplayDeadJob(ctx, jobID))
 
-	var newJobID int64
+	var replayedID int64
 	var attempt int16
 	var maxAttempts int16
 	err = pool.QueryRow(ctx, `
 		SELECT id, attempt, max_attempts
 		FROM fluvio_jobs
-		WHERE state = 'pending'
-		  AND kind = $1
-		ORDER BY id DESC
-		LIMIT 1
-	`, "fail").Scan(&newJobID, &attempt, &maxAttempts)
+		WHERE id = $1 AND state = 'pending'
+	`, jobID).Scan(&replayedID, &attempt, &maxAttempts)
 	require.NoError(t, err)
-	require.NotEqual(t, jobID, newJobID)
+	require.Equal(t, jobID, replayedID)
 	require.Equal(t, int16(0), attempt)
 	require.Equal(t, int16(1), maxAttempts)
+
+	var jobCount int
+	err = pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM fluvio_jobs
+		WHERE kind = $1
+	`, "fail").Scan(&jobCount)
+	require.NoError(t, err)
+	require.Equal(t, 1, jobCount)
 
 	// Purge dead jobs before now; we expect the original dead row is older than 'before'.
 	time.Sleep(20 * time.Millisecond)

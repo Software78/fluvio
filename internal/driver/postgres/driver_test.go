@@ -254,6 +254,44 @@ func TestNackRetryAndDead(t *testing.T) {
 	require.Equal(t, 1, deadCount)
 }
 
+func TestReplayDead(t *testing.T) {
+	_, d := setupPostgres(t)
+	ctx := context.Background()
+
+	job, err := d.Enqueue(ctx, driver.EnqueueParams{
+		Kind:        "replay_job",
+		Args:        []byte(`{}`),
+		MaxAttempts: 1,
+	})
+	require.NoError(t, err)
+
+	jobs, err := d.Fetch(ctx, []string{"default"}, "w1", 1)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	require.NoError(t, d.Nack(ctx, jobs[0].ID, errTest, time.Now()))
+
+	got, err := d.GetJob(ctx, job.ID)
+	require.NoError(t, err)
+	require.Equal(t, "dead", got.State)
+
+	require.NoError(t, d.ReplayDead(ctx, job.ID))
+
+	got, err = d.GetJob(ctx, job.ID)
+	require.NoError(t, err)
+	require.Equal(t, "pending", got.State)
+	require.Equal(t, int16(0), got.Attempt)
+
+	var replayedAt *time.Time
+	err = d.Pool().QueryRow(ctx, `
+		SELECT replayed_at FROM fluvio_dead_jobs WHERE id = $1
+	`, job.ID).Scan(&replayedAt)
+	require.NoError(t, err)
+	require.NotNil(t, replayedAt)
+
+	err = d.ReplayDead(ctx, job.ID)
+	require.ErrorIs(t, err, fluvio.ErrJobNotFound)
+}
+
 var errTest = testError{}
 
 type testError struct{}

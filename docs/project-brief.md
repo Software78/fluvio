@@ -412,7 +412,7 @@ type Driver interface {
     // ListDead returns dead jobs, newest first.
     ListDead(ctx context.Context, limit, offset int) ([]*Job, error)
 
-    // ReplayDead re-enqueues a dead job as a fresh pending job.
+    // ReplayDead re-enqueues the existing dead job back to pending (same ID, attempt reset).
     ReplayDead(ctx context.Context, jobID int64) error
 
     // PurgeDead permanently deletes dead jobs finalized before the given time.

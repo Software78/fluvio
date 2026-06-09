@@ -25,7 +25,7 @@ func (NoopDriver) Fetch(context.Context, []string, string, int) ([]*Job, error) 
 	return nil, nil
 }
 
-func (NoopDriver) Ack(context.Context, int64) error { return nil }
+func (NoopDriver) Ack(context.Context, int64, []byte) error { return nil }
 
 func (NoopDriver) Nack(context.Context, int64, error, time.Time) error { return nil }
 

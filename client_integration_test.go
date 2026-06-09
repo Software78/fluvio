@@ -4,6 +4,7 @@ package fluvio_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -305,6 +306,116 @@ func TestStopCancelsInFlightWorker(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("Stop did not return within 500ms")
 	}
+}
+
+type LogHelloWorker struct {
+	fluvio.WorkerDefaults[HelloArgs]
+	done chan int64
+}
+
+func (w *LogHelloWorker) Work(ctx context.Context, job *fluvio.Job[HelloArgs]) error {
+	job.Info("greeting sent", map[string]any{"name": job.Args.Name})
+	w.done <- job.ID
+	return nil
+}
+
+func setupLogIntegration(t *testing.T) (*pgxpool.Pool, *fluvio.Client, *LogHelloWorker) {
+	t.Helper()
+	ctx := context.Background()
+
+	container, err := tcpostgres.Run(ctx,
+		"postgres:16-alpine",
+		tcpostgres.WithDatabase("fluvio"),
+		tcpostgres.WithUsername("fluvio"),
+		tcpostgres.WithPassword("fluvio"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = container.Terminate(ctx) })
+
+	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(t, err)
+
+	pool, err := pgxpool.New(ctx, connStr)
+	require.NoError(t, err)
+	t.Cleanup(func() { pool.Close() })
+
+	d := postgres.New(pool, postgres.Config{})
+	require.NoError(t, d.Migrate(ctx))
+
+	workers := fluvio.NewWorkers()
+	lw := &LogHelloWorker{done: make(chan int64, 4)}
+	fluvio.AddWorker(workers, lw)
+
+	client, err := fluvio.NewClient(d, &fluvio.Config{
+		Queues: map[string]fluvio.QueueConfig{
+			fluvio.QueueDefault: {MaxWorkers: 5},
+		},
+		Workers: workers,
+	})
+	require.NoError(t, err)
+	return pool, client, lw
+}
+
+func TestJobLogsOnSuccess(t *testing.T) {
+	_, client, lw := setupLogIntegration(t)
+	ctx := context.Background()
+
+	require.NoError(t, client.Start(ctx))
+	t.Cleanup(func() { client.Stop() })
+
+	row, err := client.Enqueue(ctx, HelloArgs{Name: "alice"})
+	require.NoError(t, err)
+
+	select {
+	case id := <-lw.done:
+		require.Equal(t, row.ID, id)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for job")
+	}
+
+	require.Eventually(t, func() bool {
+		job, err := client.GetJob(ctx, row.ID)
+		if err != nil || job.State != fluvio.JobStateCompleted {
+			return false
+		}
+		var entries []fluvio.JobLogEntry
+		if err := json.Unmarshal(job.Logs, &entries); err != nil {
+			return false
+		}
+		return len(entries) == 1 &&
+			entries[0].Level == "info" &&
+			entries[0].Message == "greeting sent"
+	}, 5*time.Second, 50*time.Millisecond)
+}
+
+func TestJobLogsNotSavedOnFailure(t *testing.T) {
+	pool, _, _ := setupIntegration(t)
+	ctx := context.Background()
+
+	workers := fluvio.NewWorkers()
+	fluvio.AddWorker(workers, &FailWorker{})
+
+	d := postgres.New(pool, postgres.Config{})
+	client, err := fluvio.NewClient(d, &fluvio.Config{
+		Queues:  map[string]fluvio.QueueConfig{fluvio.QueueDefault: {MaxWorkers: 2}},
+		Workers: workers,
+	})
+	require.NoError(t, err)
+	require.NoError(t, client.Start(ctx))
+	t.Cleanup(func() { client.Stop() })
+
+	row, err := client.Enqueue(ctx, FailArgs{}, fluvio.WithMaxAttempts(1))
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		job, err := client.GetJob(ctx, row.ID)
+		return err == nil && job.State == fluvio.JobStateDead
+	}, 5*time.Second, 100*time.Millisecond)
+
+	job, err := client.GetJob(ctx, row.ID)
+	require.NoError(t, err)
+	require.Empty(t, job.Logs)
 }
 
 func TestUniqueEnqueue(t *testing.T) {

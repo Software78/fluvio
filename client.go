@@ -798,7 +798,11 @@ func (c *Client) handleJob(ctx context.Context, dJob *driver.Job) error {
 		nextAt := time.Now().Add(delay)
 		return c.nackJob(ctx, dJob, err, nextAt)
 	}
-	return c.driver.Ack(ctx, dJob.ID)
+	var logs []byte
+	if len(wrap.logBuf) > 0 {
+		logs, _ = json.Marshal(wrap.logBuf)
+	}
+	return c.driver.Ack(ctx, dJob.ID, logs)
 }
 
 func (c *Client) nackJob(ctx context.Context, dJob *driver.Job, err error, nextAt time.Time) error {
@@ -832,6 +836,7 @@ func driverJobToRow(job *driver.Job) JobRow {
 		CreatedAt:   job.CreatedAt,
 		DiedAt:      job.DiedAt,
 		ErrorTrace:  json.RawMessage(job.ErrorTrace),
+		Logs:        json.RawMessage(job.Logs),
 		Tags:        job.Tags,
 		UniqueKey:   job.UniqueKey,
 		Metadata:    json.RawMessage(job.Metadata),

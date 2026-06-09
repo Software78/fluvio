@@ -119,7 +119,7 @@ func fetchAndAck(t *testing.T, ctx context.Context, d driver.Driver, jobID int64
 	require.NoError(t, err)
 	require.Len(t, jobs, 1)
 	require.Equal(t, jobID, jobs[0].ID)
-	require.NoError(t, d.Ack(ctx, jobID))
+	require.NoError(t, d.Ack(ctx, jobID, nil))
 }
 
 func diamondWorkflow() *fluvio.Workflow {

@@ -1,0 +1,1 @@
+ALTER TABLE fluvio_jobs ADD COLUMN logs JSONB;

@@ -129,10 +129,33 @@ func TestEnqueueFetchAck(t *testing.T) {
 	require.Equal(t, "running", jobs[0].State)
 	require.Equal(t, int16(1), jobs[0].Attempt)
 
-	require.NoError(t, d.Ack(ctx, jobs[0].ID))
+	require.NoError(t, d.Ack(ctx, jobs[0].ID, nil))
 	got, err := d.GetJob(ctx, jobs[0].ID)
 	require.NoError(t, err)
 	require.Equal(t, "completed", got.State)
+}
+
+func TestAckPersistsLogs(t *testing.T) {
+	_, d := setupPostgres(t)
+	ctx := context.Background()
+
+	job, err := d.Enqueue(ctx, driver.EnqueueParams{
+		Kind: "log_job",
+		Args: []byte(`{}`),
+	})
+	require.NoError(t, err)
+
+	jobs, err := d.Fetch(ctx, []string{"default"}, "worker-1", 1)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+
+	logsJSON := []byte(`[{"at":"2024-01-01T00:00:00Z","level":"info","message":"done"}]`)
+	require.NoError(t, d.Ack(ctx, jobs[0].ID, logsJSON))
+
+	got, err := d.GetJob(ctx, job.ID)
+	require.NoError(t, err)
+	require.Equal(t, "completed", got.State)
+	require.JSONEq(t, string(logsJSON), string(got.Logs))
 }
 
 func TestEnqueueTx(t *testing.T) {

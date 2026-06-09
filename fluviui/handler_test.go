@@ -191,6 +191,49 @@ func TestHandlerAPIErrorSanitized(t *testing.T) {
 	require.NotContains(t, body["error"], "connection refused")
 }
 
+func TestJobRowViewIncludesLogs(t *testing.T) {
+	logs := json.RawMessage(`[{"level":"info","message":"ok"}]`)
+	view := jobRowToView(fluvio.JobRow{
+		ID: 1, Queue: "default", Kind: "hello", State: fluvio.JobStateCompleted, Logs: logs,
+	})
+	b, err := json.Marshal(view)
+	require.NoError(t, err)
+	var m map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(b, &m))
+	require.JSONEq(t, string(logs), string(m["logs"]))
+}
+
+type logsJobClient struct {
+	mockClient
+}
+
+func (logsJobClient) GetJob(ctx context.Context, id int64) (*fluvio.JobRow, error) {
+	_ = ctx
+	return &fluvio.JobRow{
+		ID:    id,
+		Kind:  "hello",
+		State: fluvio.JobStateCompleted,
+		Logs:  json.RawMessage(`[{"level":"info","message":"done","data":{"rows":3}}]`),
+	}, nil
+}
+
+func TestHandlerAPIJobDetailLogs(t *testing.T) {
+	h := handlerFor(logsJobClient{})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/fluvio/api/jobs/42")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var view JobRowView
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&view))
+	require.Equal(t, int64(42), view.ID)
+	require.Equal(t, fluvio.JobStateCompleted, view.State)
+	require.JSONEq(t, `[{"level":"info","message":"done","data":{"rows":3}}]`, string(view.Logs))
+}
+
 func TestCORSDefaultOrigin(t *testing.T) {
 	h := handlerFor(mockClient{})
 	srv := httptest.NewServer(h)

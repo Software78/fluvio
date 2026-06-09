@@ -32,19 +32,19 @@ const maxErrorTraceEntries = 25
 
 const jobColumns = `id, queue, kind, args, state, priority, attempt, max_attempts,
 	attempted_by, scheduled_at, attempted_at, finalized_at, created_at,
-	error_trace, tags, unique_key, metadata, workflow_id, workflow_task_id, encrypted,
+	error_trace, logs, tags, unique_key, metadata, workflow_id, workflow_task_id, encrypted,
 	concurrency_slot_key`
 
 const deadJobColumns = `id, queue, kind, args, error_trace, metadata, tags, died_at, encrypted`
 
 func scanJob(row pgx.Row) (*driver.Job, error) {
 	var j driver.Job
-	var args, metadata, errorTrace []byte
+	var args, metadata, errorTrace, logs []byte
 	var uniqueKey, workflowID, workflowTaskID *string
 	err := row.Scan(
 		&j.ID, &j.Queue, &j.Kind, &args, &j.State, &j.Priority, &j.Attempt, &j.MaxAttempts,
 		&j.AttemptedBy, &j.ScheduledAt, &j.AttemptedAt, &j.FinalizedAt, &j.CreatedAt,
-		&errorTrace, &j.Tags, &uniqueKey, &metadata, &workflowID, &workflowTaskID, &j.Encrypted,
+		&errorTrace, &logs, &j.Tags, &uniqueKey, &metadata, &workflowID, &workflowTaskID, &j.Encrypted,
 		&j.ConcurrencySlotKey,
 	)
 	if err != nil {
@@ -53,6 +53,7 @@ func scanJob(row pgx.Row) (*driver.Job, error) {
 	j.Args = args
 	j.Metadata = metadata
 	j.ErrorTrace = errorTrace
+	j.Logs = logs
 	j.UniqueKey = uniqueKey
 	j.WorkflowID = workflowID
 	j.WorkflowTaskID = workflowTaskID
@@ -258,7 +259,7 @@ func (d *Driver) filterPausedQueues(ctx context.Context, queues []string) ([]str
 	return active, rows.Err()
 }
 
-func (d *Driver) Ack(ctx context.Context, jobID int64) error {
+func (d *Driver) Ack(ctx context.Context, jobID int64, logs []byte) error {
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -278,12 +279,12 @@ func (d *Driver) Ack(ctx context.Context, jobID int64) error {
 			FOR UPDATE
 		)
 		UPDATE fluvio_jobs j
-		SET state = 'completed', finalized_at = now(), concurrency_slot_key = NULL
+		SET state = 'completed', finalized_at = now(), concurrency_slot_key = NULL, logs = $2
 		FROM old
 		WHERE j.id = $1
 		RETURNING old.kind, old.workflow_id, old.workflow_task_id, old.concurrency_slot_key,
 			old.sequence_id, old.sequence_pos
-	`, jobID).Scan(&kind, &workflowID, &workflowTaskID, &slotKey, &sequenceID, &sequencePos)
+	`, jobID, logs).Scan(&kind, &workflowID, &workflowTaskID, &slotKey, &sequenceID, &sequencePos)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fluvio.ErrJobNotFound

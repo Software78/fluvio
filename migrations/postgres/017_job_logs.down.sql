@@ -1,0 +1,1 @@
+ALTER TABLE fluvio_jobs DROP COLUMN IF EXISTS logs;

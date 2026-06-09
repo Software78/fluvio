@@ -115,7 +115,7 @@ func fetchAndAckStep(t *testing.T, ctx context.Context, pool *pgxpool.Pool, d dr
 	t.Helper()
 	job := fetchOne(t, ctx, d)
 	require.Equal(t, pos, sequencePosForJob(t, pool, job.ID))
-	require.NoError(t, d.Ack(ctx, job.ID))
+	require.NoError(t, d.Ack(ctx, job.ID, nil))
 }
 
 func TestSequenceLifecycle(t *testing.T) {
@@ -143,7 +143,7 @@ func TestSequenceLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, noJobs)
 
-	require.NoError(t, d.Ack(ctx, job.ID))
+	require.NoError(t, d.Ack(ctx, job.ID, nil))
 	jobs = jobsForSequence(t, pool, seqID)
 	require.Equal(t, "completed", jobs[0].State)
 	require.Equal(t, "pending", jobs[1].State)

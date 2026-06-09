@@ -55,7 +55,7 @@ claimed AS (
   WHERE j.id = e.id
   RETURNING j.id, j.queue, j.kind, j.args, j.state, j.priority, j.attempt, j.max_attempts,
     j.attempted_by, j.scheduled_at, j.attempted_at, j.finalized_at, j.created_at,
-    j.error_trace, j.tags, j.unique_key, j.metadata, j.workflow_id, j.workflow_task_id, j.encrypted,
+    j.error_trace, j.logs, j.tags, j.unique_key, j.metadata, j.workflow_id, j.workflow_task_id, j.encrypted,
     j.concurrency_slot_key
 ),
 _ AS (
@@ -66,7 +66,7 @@ _ AS (
 )
 SELECT id, queue, kind, args, state, priority, attempt, max_attempts,
   attempted_by, scheduled_at, attempted_at, finalized_at, created_at,
-  error_trace, tags, unique_key, metadata, workflow_id, workflow_task_id, encrypted,
+  error_trace, logs, tags, unique_key, metadata, workflow_id, workflow_task_id, encrypted,
   concurrency_slot_key
 FROM claimed
 `

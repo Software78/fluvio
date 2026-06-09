@@ -135,7 +135,7 @@ func (d *stopLifecycleDriver) Fetch(ctx context.Context, _ []string, _ string, m
 	return out, nil
 }
 
-func (d *stopLifecycleDriver) Ack(_ context.Context, id int64) error {
+func (d *stopLifecycleDriver) Ack(_ context.Context, id int64, _ []byte) error {
 	if d.ackCh != nil {
 		select {
 		case d.ackCh <- id:

@@ -304,6 +304,20 @@ Set `WorkerID` explicitly in production so job pickup and fleet visibility are s
 
 Each `Job` passed to `Work()` includes `WorkerID` (this instance), `MaxWorkers` (local queue concurrency), and `AttemptedBy` (claim history). Use `job.ClaimedBy()` for the worker that claimed the current attempt.
 
+### Job logs
+
+Workers can attach structured log entries during execution with `job.Info`, `job.Warn`, `job.Error`, or `job.Debug`. On successful completion, entries are persisted to `fluvio_jobs.logs` as a JSONB array (`level`, `message`, `at`, optional `data`). Failed attempts do not persist logs.
+
+```go
+func (w *SendEmailWorker) Work(ctx context.Context, job *fluvio.Job[SendEmailArgs]) error {
+    // ... send email ...
+    job.Info("email sent", map[string]any{"to": job.Args.To, "message_id": msgID})
+    return nil
+}
+```
+
+Inspect persisted logs with `client.GetJob` or the fluviui API (`GET /fluvio/api/jobs/{id}` returns a `logs` field on completed jobs).
+
 Processing clients with at least one queue where `MaxWorkers > 0` register in the `fluvio_workers` table. Query the fleet with `client.ListWorkers(ctx)` or `client.QueueWorkerCapacity(ctx, queue)`.
 
 Per-queue `MaxWorkers` controls concurrency — each queue gets its own fetch loop capped at that limit. Set `MaxWorkers` to 0 to disable processing for a queue. Omit queues entirely for insert-only clients.
@@ -321,6 +335,8 @@ The `fluvio_jobs` columns `batch_id`, `sequence_id`, and `sequence_pos` are rese
 ### fluviui
 
 The `fluviui` HTTP handlers are unauthenticated. Deploy behind a reverse proxy or use `fluviui.WithMiddleware` to add authentication.
+
+Job list and detail responses include `logs` (JSON array) for completed jobs that recorded execution logs. [Fluvio UI](https://github.com/Software78/fluvio_ui) consumes this field from `GET /fluvio/api/jobs` and `GET /fluvio/api/jobs/{id}`.
 
 ### Postgres driver (`postgres.Config`)
 

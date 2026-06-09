@@ -24,6 +24,7 @@ type Job struct {
 	CreatedAt   time.Time
 	DiedAt      *time.Time
 	ErrorTrace  []byte
+	Logs           []byte
 	Tags           []string
 	UniqueKey      *string
 	Metadata       []byte
@@ -123,7 +124,7 @@ type Driver interface {
 	EnqueueTx(ctx context.Context, tx Tx, p EnqueueParams) (*Job, error)
 	EnqueueMany(ctx context.Context, params []EnqueueParams) ([]*Job, error)
 	Fetch(ctx context.Context, queues []string, workerID string, maxJobs int) ([]*Job, error)
-	Ack(ctx context.Context, jobID int64) error
+	Ack(ctx context.Context, jobID int64, logs []byte) error
 	Nack(ctx context.Context, jobID int64, jobErr error, nextAttemptAt time.Time) error
 	Cancel(ctx context.Context, jobID int64) error
 	RunJobNow(ctx context.Context, jobID int64) error

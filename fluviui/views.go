@@ -25,6 +25,7 @@ type JobRowView struct {
 	CreatedAt   time.Time       `json:"created_at"`
 	DiedAt      *time.Time      `json:"died_at,omitempty"`
 	ErrorTrace  json.RawMessage `json:"error_trace,omitempty"`
+	Logs        json.RawMessage `json:"logs,omitempty"`
 	Tags        []string        `json:"tags"`
 	UniqueKey   *string         `json:"unique_key"`
 	Metadata    json.RawMessage `json:"metadata"`
@@ -45,7 +46,7 @@ func jobRowToView(row fluvio.JobRow) JobRowView {
 		MaxAttempts: row.MaxAttempts, AttemptedBy: attemptedBy,
 		ScheduledAt: row.ScheduledAt, AttemptedAt: row.AttemptedAt,
 		FinalizedAt: row.FinalizedAt, CreatedAt: row.CreatedAt,
-		DiedAt: row.DiedAt, ErrorTrace: row.ErrorTrace, Tags: tags,
+		DiedAt: row.DiedAt, ErrorTrace: row.ErrorTrace, Logs: row.Logs, Tags: tags,
 		UniqueKey: row.UniqueKey, Metadata: row.Metadata,
 	}
 }

@@ -100,10 +100,21 @@ type PeriodicDriver interface {
 	BeginTx(ctx context.Context) (Tx, error)
 	CommitTx(ctx context.Context, tx Tx) error
 	RollbackTx(ctx context.Context, tx Tx) error
+	EnqueueTx(ctx context.Context, tx Tx, p EnqueueParams) (*Job, error)
 }
 
 type MaintenanceDriver interface {
 	StuckJobs(ctx context.Context, timeout time.Duration) ([]*Job, error)
+}
+
+type FetchDriver interface {
+	Fetch(ctx context.Context, queues []string, workerID string, maxJobs int) ([]*Job, error)
+}
+
+type WorkerRegistryDriver interface {
+	UpsertWorker(ctx context.Context, workerID string, queues map[string]int) error
+	RemoveWorker(ctx context.Context, workerID string) error
+	ListWorkers(ctx context.Context, staleAfter time.Duration) ([]*WorkerInstance, error)
 }
 
 // Driver is the OSS driver interface.

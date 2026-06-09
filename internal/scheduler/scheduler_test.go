@@ -26,13 +26,6 @@ func newRecordingDriver() *recordingDriver {
 	return &recordingDriver{periodicJobs: make(map[string]*driver.PeriodicJob)}
 }
 
-func (d *recordingDriver) Enqueue(_ context.Context, p driver.EnqueueParams) (*driver.Job, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.enqueued = append(d.enqueued, p.Kind)
-	return &driver.Job{Kind: p.Kind}, nil
-}
-
 func (d *recordingDriver) EnqueueTx(_ context.Context, _ driver.Tx, p driver.EnqueueParams) (*driver.Job, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

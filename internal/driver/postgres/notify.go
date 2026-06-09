@@ -19,10 +19,19 @@ type execQuerier interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 }
 
+type clock interface {
+	Now() time.Time
+}
+
+type realClock struct{}
+
+func (realClock) Now() time.Time { return time.Now() }
+
 type notifyLimiter struct {
 	mu       sync.Mutex
 	last     map[string]time.Time
 	cooldown time.Duration
+	clock    clock
 }
 
 func newNotifyLimiter(cooldown time.Duration) *notifyLimiter {
@@ -32,13 +41,14 @@ func newNotifyLimiter(cooldown time.Duration) *notifyLimiter {
 	return &notifyLimiter{
 		last:     make(map[string]time.Time),
 		cooldown: cooldown,
+		clock:    realClock{},
 	}
 }
 
 func (l *notifyLimiter) Allow(channel string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := time.Now()
+	now := l.clock.Now()
 	if last, ok := l.last[channel]; ok && now.Sub(last) < l.cooldown {
 		return false
 	}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"math"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -85,7 +84,7 @@ func DefaultRetryDelayForJob[T JobArgs](job *Job[T], maxDelay time.Duration) tim
 
 type Workers struct {
 	mu      sync.RWMutex
-	started atomic.Bool
+	started bool
 	byKind  map[string]anyWorker
 }
 
@@ -161,7 +160,7 @@ func NewWorkers() *Workers {
 func AddWorker[T JobArgs](w *Workers, worker Worker[T]) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.started.Load() {
+	if w.started {
 		panic("fluvio: AddWorker after Client.Start is not supported")
 	}
 	var zero T
@@ -172,7 +171,7 @@ func AddWorker[T JobArgs](w *Workers, worker Worker[T]) {
 func (w *Workers) markStarted() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.started.Store(true)
+	w.started = true
 }
 
 func (w *Workers) get(kind string) (anyWorker, bool) {

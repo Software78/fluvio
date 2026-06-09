@@ -11,23 +11,25 @@ import (
 )
 
 type FetchLoop struct {
-	driver        driver.Driver
-	queues        []string
-	workerID      string
-	interval      time.Duration
-	executor      *Executor
-	handler       JobHandler
-	logger        *slog.Logger
-	wake          <-chan struct{}
-	stopCh        chan struct{}
-	stopOnce      sync.Once
-	doneCh        chan struct{}
-	backoff       time.Duration
-	maxBackoff    time.Duration
+	ctx        context.Context
+	driver     driver.FetchDriver
+	queues     []string
+	workerID   string
+	interval   time.Duration
+	executor   *Executor
+	handler    JobHandler
+	logger     *slog.Logger
+	wake       <-chan struct{}
+	stopCh     chan struct{}
+	stopOnce   sync.Once
+	doneCh     chan struct{}
+	backoff    time.Duration
+	maxBackoff time.Duration
 }
 
 func NewFetchLoop(
-	d driver.Driver,
+	ctx context.Context,
+	d driver.FetchDriver,
 	queues []string,
 	workerID string,
 	interval time.Duration,
@@ -36,7 +38,11 @@ func NewFetchLoop(
 	logger *slog.Logger,
 	wake <-chan struct{},
 ) *FetchLoop {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &FetchLoop{
+		ctx:        ctx,
 		driver:     d,
 		queues:     queues,
 		workerID:   workerID,
@@ -45,9 +51,9 @@ func NewFetchLoop(
 		handler:    handler,
 		logger:     logger,
 		wake:       wake,
-		stopCh:     make(chan struct{}),
-		doneCh:     make(chan struct{}),
-		maxBackoff: 5 * time.Second,
+		stopCh:      make(chan struct{}),
+		doneCh:      make(chan struct{}),
+		maxBackoff:  5 * time.Second,
 	}
 }
 
@@ -102,14 +108,16 @@ func (f *FetchLoop) tick(sleep *time.Duration) (stop bool) {
 		return false
 	}
 
-	ctx := context.Background()
-	jobs, err := f.driver.Fetch(ctx, f.queues, f.workerID, slots)
+	jobs, err := f.driver.Fetch(f.ctx, f.queues, f.workerID, slots)
 	if errors.Is(err, driver.ErrQueuesPaused) {
 		f.backoff = 0
 		*sleep = f.interval
 		return false
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return true
+		}
 		f.logger.Error("fetch failed", "error", err)
 		*sleep = f.interval
 		return false
@@ -132,7 +140,7 @@ func (f *FetchLoop) tick(sleep *time.Duration) (stop bool) {
 	*sleep = f.interval
 
 	for _, job := range jobs {
-		f.executor.Dispatch(context.Background(), job, f.handler)
+		f.executor.Dispatch(f.ctx, job, f.handler)
 	}
 	return false
 }

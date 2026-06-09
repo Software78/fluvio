@@ -27,6 +27,7 @@ type WorkflowState struct {
 }
 
 // WorkflowTaskState is the runtime state of one workflow task.
+// State is one of waiting, pending, running, completed, failed, or cancelled.
 type WorkflowTaskState struct {
 	TaskID    string
 	State     string

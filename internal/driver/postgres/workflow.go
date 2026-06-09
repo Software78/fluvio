@@ -214,7 +214,7 @@ func (d *Driver) failWorkflowTaskTx(ctx context.Context, tx pgx.Tx, workflowID, 
 	if _, err := tx.Exec(ctx, `
 		UPDATE fluvio_workflow_tasks
 		SET state = 'cancelled'
-		WHERE workflow_id = $1 AND task_id <> $2 AND state IN ('waiting', 'pending', 'running')
+		WHERE workflow_id = $1 AND task_id <> $2 AND state IN ('waiting', 'pending')
 	`, workflowID, taskID); err != nil {
 		return err
 	}

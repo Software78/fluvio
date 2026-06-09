@@ -11,9 +11,9 @@ import (
 )
 
 // Workflow is a DAG of jobs built with the fluent Task API.
-// When a task fails terminally, sibling tasks in waiting, pending, or running
-// state are cancelled and their queued jobs are cancelled. An in-flight running
-// job may still finish its current execution, but no downstream tasks are enqueued.
+// When a task fails terminally, sibling tasks in waiting or pending state are
+// cancelled and their queued jobs are cancelled. A sibling already running keeps
+// its in-flight job until the worker acks or nacks; no downstream tasks are enqueued.
 type Workflow struct {
 	id       string
 	tasks    []workflowTaskDef

@@ -14,13 +14,21 @@ func TestQueueNotifyChannel(t *testing.T) {
 	require.Equal(t, "fluvio.emails", queueNotifyChannel("emails"))
 }
 
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) Now() time.Time { return c.t }
+
+func (c *fakeClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
+
 func TestNotifyLimiterDebounce(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(0, 0)}
 	l := newNotifyLimiter(50 * time.Millisecond)
+	l.clock = clk
 	require.True(t, l.Allow("fluvio.default"))
 	require.False(t, l.Allow("fluvio.default"))
 	require.True(t, l.Allow("fluvio.other"))
 
-	time.Sleep(60 * time.Millisecond)
+	clk.Advance(60 * time.Millisecond)
 	require.True(t, l.Allow("fluvio.default"))
 }
 

@@ -289,11 +289,7 @@ func TestSSEFirstEventIsStats(t *testing.T) {
 }
 
 func TestSSEStreamKeepalive(t *testing.T) {
-	if testing.Short() {
-		t.Skip("keepalive ticker is 15s")
-	}
-
-	h := handlerFor(mockClient{})
+	h := handlerFor(mockClient{}, WithKeepaliveInterval(50*time.Millisecond))
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
@@ -314,10 +310,10 @@ func TestSSEStreamKeepalive(t *testing.T) {
 		done <- b
 	}()
 
-	time.Sleep(16 * time.Second)
+	time.Sleep(200 * time.Millisecond)
 	cancel()
 
 	body := string(<-done)
-	require.GreaterOrEqual(t, strings.Count(body, "event: stats"), 2)
+	require.GreaterOrEqual(t, strings.Count(body, "event: stats"), 1)
 	require.Contains(t, body, ": keepalive")
 }

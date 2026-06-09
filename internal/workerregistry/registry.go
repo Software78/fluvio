@@ -13,7 +13,7 @@ const heartbeatTimeout = 5 * time.Second
 
 // Registry heartbeats a processing client into the fleet worker table.
 type Registry struct {
-	driver   driver.Driver
+	driver   driver.WorkerRegistryDriver
 	workerID string
 	queues   map[string]int
 	interval time.Duration
@@ -23,7 +23,7 @@ type Registry struct {
 	doneCh   chan struct{}
 }
 
-func New(d driver.Driver, workerID string, queues map[string]int, interval time.Duration, logger *slog.Logger) *Registry {
+func New(d driver.WorkerRegistryDriver, workerID string, queues map[string]int, interval time.Duration, logger *slog.Logger) *Registry {
 	if queues == nil {
 		queues = map[string]int{}
 	}

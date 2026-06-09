@@ -16,8 +16,9 @@ import (
 )
 
 type queueRunner struct {
-	loop *executor.FetchLoop
-	exec *executor.Executor
+	loop           *executor.FetchLoop
+	exec           *executor.Executor
+	shutdownCancel context.CancelFunc
 }
 
 type pendingPeriodic struct {
@@ -35,11 +36,13 @@ type pendingPeriodic struct {
 
 // Client is the main Fluvio job queue client.
 type Client struct {
-	driver  driver.Driver
-	cfg     Config
-	mu      sync.Mutex
-	running bool
-	stopCh  chan struct{}
+	driver       driver.Driver
+	cfg          Config
+	mu           sync.Mutex
+	running      bool
+	stopCh       chan struct{}
+	clientCtx    context.Context
+	clientCancel context.CancelFunc
 
 	queueRunners []*queueRunner
 	registry     *workerregistry.Registry
@@ -125,7 +128,9 @@ func (c *Client) Start(ctx context.Context) error {
 			continue
 		}
 		exec := executor.New(qc.MaxWorkers, c.cfg.Logger)
+		shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 		loop := executor.NewFetchLoop(
+			shutdownCtx,
 			c.driver,
 			[]string{name},
 			c.cfg.WorkerID,
@@ -134,8 +139,13 @@ func (c *Client) Start(ctx context.Context) error {
 			c.handleJob,
 			c.cfg.Logger,
 			wake,
+			
 		)
-		c.queueRunners = append(c.queueRunners, &queueRunner{loop: loop, exec: exec})
+		c.queueRunners = append(c.queueRunners, &queueRunner{
+			loop:           loop,
+			exec:           exec,
+			shutdownCancel: shutdownCancel,
+		})
 	}
 
 	c.stopCh = make(chan struct{})
@@ -216,6 +226,11 @@ func (c *Client) StopContext(ctx context.Context) error {
 	if c.wakeSub != nil {
 		_ = c.wakeSub.Close()
 		c.wakeSub = nil
+	}
+	for _, qr := range c.queueRunners {
+		if qr.shutdownCancel != nil {
+			qr.shutdownCancel()
+		}
 	}
 	for _, qr := range c.queueRunners {
 		qr.loop.Stop()

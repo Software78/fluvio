@@ -14,7 +14,7 @@ type NackFunc func(ctx context.Context, job *driver.Job, err error, nextAttemptA
 type retryDelayFunc func(attempt int16, maxDelay time.Duration) time.Duration
 
 type Reaper struct {
-	driver        driver.Driver
+	driver        driver.MaintenanceDriver
 	logger        *slog.Logger
 	timeout       time.Duration
 	interval      time.Duration
@@ -28,7 +28,7 @@ type Reaper struct {
 }
 
 func NewReaper(
-	d driver.Driver,
+	d driver.MaintenanceDriver,
 	logger *slog.Logger,
 	timeout, interval, startupDelay, maxRetryDelay time.Duration,
 	retryDelay retryDelayFunc,

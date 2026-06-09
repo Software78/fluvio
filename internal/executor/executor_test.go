@@ -161,7 +161,7 @@ func TestExecutorStopDoesNotRunHandlerAfterClose(t *testing.T) {
 func TestFetchLoopBackoff(t *testing.T) {
 	fd := &fakeDriver{}
 	exec := executor.New(5, slog.Default())
-	loop := executor.NewFetchLoop(fd, []string{"default"}, "w1", 10*time.Millisecond, exec, func(ctx context.Context, job *driver.Job) error {
+	loop := executor.NewFetchLoop(context.Background(), fd, []string{"default"}, "w1", 10*time.Millisecond, exec, func(ctx context.Context, job *driver.Job) error {
 		return nil
 	}, slog.Default(), nil)
 	loop.Start()
@@ -176,7 +176,7 @@ func TestFetchLoopWake(t *testing.T) {
 	}
 	exec := executor.New(5, slog.Default())
 	wake := make(chan struct{}, 1)
-	loop := executor.NewFetchLoop(fd, []string{"default"}, "w1", time.Second, exec, func(ctx context.Context, job *driver.Job) error {
+	loop := executor.NewFetchLoop(context.Background(), fd, []string{"default"}, "w1", time.Second, exec, func(ctx context.Context, job *driver.Job) error {
 		return nil
 	}, slog.Default(), wake)
 	loop.Start()
@@ -196,4 +196,56 @@ func TestFetchLoopWake(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return fd.fetchCount.Load() >= 2
 	}, time.Second, 10*time.Millisecond)
+}
+
+type blockingFetchDriver struct {
+	driver.NoopDriver
+	fetching chan struct{}
+}
+
+func (d *blockingFetchDriver) Fetch(ctx context.Context, _ []string, _ string, _ int) ([]*driver.Job, error) {
+	select {
+	case d.fetching <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestFetchLoopClientContextCancel(t *testing.T) {
+	clientCtx, cancel := context.WithCancel(context.Background())
+
+	fd := &blockingFetchDriver{fetching: make(chan struct{}, 1)}
+	exec := executor.New(1, slog.Default())
+	loop := executor.NewFetchLoop(
+		clientCtx, fd, []string{"default"}, "w1", 10*time.Millisecond, exec,
+		func(ctx context.Context, job *driver.Job) error { return nil },
+		slog.Default(), nil,
+	)
+	loop.Start()
+	t.Cleanup(func() {
+		cancel()
+		loop.Stop()
+		exec.Stop()
+	})
+
+	select {
+	case <-fd.fetching:
+	case <-time.After(time.Second):
+		t.Fatal("fetch did not start")
+	}
+
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		loop.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("fetch loop did not exit after client context cancel")
+	}
 }

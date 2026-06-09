@@ -4,13 +4,15 @@ package fluviui
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/software78/fluvio"
 )
 
 type config struct {
-	allowedOrigin string
-	middleware    func(http.Handler) http.Handler
+	allowedOrigin     string
+	keepaliveInterval time.Duration
+	middleware        func(http.Handler) http.Handler
 }
 
 type Option func(*config)
@@ -30,8 +32,19 @@ func WithMiddleware(mw func(http.Handler) http.Handler) Option {
 	}
 }
 
+// WithKeepaliveInterval sets the SSE keepalive ticker interval.
+// Defaults to 15s if not set.
+func WithKeepaliveInterval(d time.Duration) Option {
+	return func(c *config) {
+		c.keepaliveInterval = d
+	}
+}
+
 func defaultConfig() config {
-	return config{allowedOrigin: "*"}
+	return config{
+		allowedOrigin:     "*",
+		keepaliveInterval: 15 * time.Second,
+	}
 }
 
 func corsMiddleware(cfg config) func(http.Handler) http.Handler {
@@ -70,7 +83,7 @@ func handlerFor(client apiClient, opts ...Option) http.Handler {
 		return h
 	}
 
-	mux.Handle("/fluvio/api/events", wrap(sseHandler(client)))
+	mux.Handle("/fluvio/api/events", wrap(sseHandler(client, cfg)))
 	mux.Handle("/fluvio/api/workers", wrap(workersHandler(client)))
 	mux.Handle("/fluvio/api/jobs", wrap(jobsHandler(client)))
 	mux.Handle("/fluvio/api/jobs/", wrap(jobDetailHandler(client)))

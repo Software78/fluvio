@@ -16,7 +16,7 @@ type LeaderCallbacks struct {
 }
 
 type Elector struct {
-	driver      driver.Driver
+	driver      driver.LeaderElector
 	logger      *slog.Logger
 	callbacks   LeaderCallbacks
 	interval    time.Duration
@@ -31,7 +31,7 @@ type Elector struct {
 	renewWG     sync.WaitGroup
 }
 
-func NewElector(d driver.Driver, logger *slog.Logger, callbacks LeaderCallbacks) *Elector {
+func NewElector(d driver.LeaderElector, logger *slog.Logger, callbacks LeaderCallbacks) *Elector {
 	return &Elector{
 		driver:    d,
 		logger:    logger,

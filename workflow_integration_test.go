@@ -211,11 +211,35 @@ func TestWorkflowFailCancelsParallelSiblings(t *testing.T) {
 	require.NoError(t, client.Start(ctx))
 	t.Cleanup(func() { client.Stop() })
 
+	var slowJobID int64
 	require.Eventually(t, func() bool {
 		wfState, err := client.GetWorkflow(ctx, wfID)
 		if err != nil {
 			return false
 		}
-		return wfState.State == "failed" && taskState(wfState, "B") == "cancelled"
+		if wfState.State != "failed" {
+			return false
+		}
+		slowJobID = jobIDForTask(wfState, "B")
+		if slowJobID == 0 {
+			return false
+		}
+		bState := taskState(wfState, "B")
+		return bState == "running" || bState == "completed"
 	}, 10*time.Second, 100*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		wfState, err := client.GetWorkflow(ctx, wfID)
+		if err != nil {
+			return false
+		}
+		if wfState.State != "failed" || taskState(wfState, "B") != "completed" {
+			return false
+		}
+		job, err := client.GetJob(ctx, slowJobID)
+		if err != nil {
+			return false
+		}
+		return job.State == fluvio.JobStateCompleted || job.State == fluvio.JobStateDead
+	}, 15*time.Second, 100*time.Millisecond)
 }

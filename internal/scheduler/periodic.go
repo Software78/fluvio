@@ -11,7 +11,7 @@ import (
 )
 
 type Periodic struct {
-	driver       driver.Driver
+	driver       driver.PeriodicDriver
 	logger       *slog.Logger
 	interval     time.Duration
 	startupDelay time.Duration
@@ -22,7 +22,7 @@ type Periodic struct {
 	doneCh       chan struct{}
 }
 
-func NewPeriodic(d driver.Driver, logger *slog.Logger, interval, startupDelay time.Duration) *Periodic {
+func NewPeriodic(d driver.PeriodicDriver, logger *slog.Logger, interval, startupDelay time.Duration) *Periodic {
 	if interval == 0 {
 		interval = 30 * time.Second
 	}

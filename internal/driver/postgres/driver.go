@@ -28,6 +28,8 @@ const leaderLockID int64 = 0x666c7576696f
 
 const leaseDuration = 60 * time.Second
 
+const maxErrorTraceEntries = 25
+
 const jobColumns = `id, queue, kind, args, state, priority, attempt, max_attempts,
 	attempted_by, scheduled_at, attempted_at, finalized_at, created_at,
 	error_trace, tags, unique_key, metadata, workflow_id, workflow_task_id, encrypted,
@@ -368,6 +370,9 @@ func (d *Driver) Nack(ctx context.Context, jobID int64, jobErr error, nextAttemp
 		Error:   jobErr.Error(),
 		At:      time.Now().UTC(),
 	})
+	if len(trace) > maxErrorTraceEntries {
+		trace = trace[len(trace)-maxErrorTraceEntries:]
+	}
 	newTrace, _ := json.Marshal(trace)
 
 	skipRelease := errors.Is(jobErr, fluvio.ErrConcurrencySlotUnavailable)
@@ -939,6 +944,16 @@ func buildEnqueueManyCopyRows(normalized []driver.EnqueueParams) ([][]any, []str
 	return rows, pendingQueues
 }
 
+// enqueueManyLoop inserts jobs one at a time in a single transaction. Unlike
+// client.EnqueueMany, it does not reject params with UniqueKey set: the public
+// API enforces that restriction before calling driver.EnqueueMany, while
+// internal callers (e.g. workflow task bulk-insert) may use unique keys in
+// controlled batches. Callers that need the user-facing restriction must
+// validate UniqueKey themselves before invoking this loop.
+// enqueueManyLoop inserts jobs sequentially within one transaction. Unlike
+// client.EnqueueMany, it does not reject params with UniqueKey set; the public
+// client validates WithUniqueKey before calling the driver. Direct callers of
+// this loop (benchmarks via export_test, internal paths) bypass that check.
 func (d *Driver) enqueueManyLoop(ctx context.Context, params []driver.EnqueueParams) ([]*driver.Job, error) {
 	if len(params) == 0 {
 		return nil, nil
@@ -998,12 +1013,14 @@ func (d *Driver) EnqueueMany(ctx context.Context, params []driver.EnqueueParams)
 		return nil, err
 	}
 
-	var maxID int64
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(id), 0) FROM fluvio_jobs`).Scan(&maxID); err != nil {
+	if _, err := tx.Exec(ctx, `
+		CREATE TEMP TABLE _fluvio_enqueue_staging (
+			LIKE fluvio_jobs INCLUDING DEFAULTS
+		) ON COMMIT DROP`); err != nil {
 		return nil, err
 	}
 
-	n, err := tx.CopyFrom(ctx, pgx.Identifier{"fluvio_jobs"}, enqueueManyColumns, pgx.CopyFromRows(rows))
+	n, err := tx.CopyFrom(ctx, pgx.Identifier{"_fluvio_enqueue_staging"}, enqueueManyColumns, pgx.CopyFromRows(rows))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return nil, fluvio.ErrUniqueConflict
@@ -1014,8 +1031,24 @@ func (d *Driver) EnqueueMany(ctx context.Context, params []driver.EnqueueParams)
 		return nil, fmt.Errorf("fluvio/postgres: copy inserted %d rows, expected %d", n, len(params))
 	}
 
-	resultRows, err := tx.Query(ctx, `SELECT `+jobColumns+` FROM fluvio_jobs WHERE id > $1 ORDER BY id ASC`, maxID)
+	const enqueueManyInsert = `
+		INSERT INTO fluvio_jobs (
+			queue, kind, args, state, priority, max_attempts,
+			scheduled_at, unique_key, tags, metadata,
+			workflow_id, workflow_task_id, encrypted
+		)
+		SELECT
+			queue, kind, args, state, priority, max_attempts,
+			scheduled_at, unique_key, tags, metadata,
+			workflow_id, workflow_task_id, encrypted
+		FROM _fluvio_enqueue_staging
+		RETURNING ` + jobColumns
+
+	resultRows, err := tx.Query(ctx, enqueueManyInsert)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, fluvio.ErrUniqueConflict
+		}
 		return nil, err
 	}
 	defer resultRows.Close()

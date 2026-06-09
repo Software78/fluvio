@@ -245,6 +245,68 @@ func TestMiddlewareAndErrorHandler(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond)
 }
 
+type BlockArgs struct{}
+
+func (BlockArgs) Kind() string { return "block" }
+
+type BlockWorker struct {
+	fluvio.WorkerDefaults[BlockArgs]
+	started chan struct{}
+	done    chan struct{}
+}
+
+func (w *BlockWorker) Work(ctx context.Context, job *fluvio.Job[BlockArgs]) error {
+	close(w.started)
+	<-ctx.Done()
+	close(w.done)
+	return ctx.Err()
+}
+
+func TestStopCancelsInFlightWorker(t *testing.T) {
+	pool, _, _ := setupIntegration(t)
+	ctx := context.Background()
+
+	bw := &BlockWorker{
+		started: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	workers := fluvio.NewWorkers()
+	fluvio.AddWorker(workers, bw)
+
+	d := postgres.New(pool, postgres.Config{})
+	client, err := fluvio.NewClient(d, &fluvio.Config{
+		Queues: map[string]fluvio.QueueConfig{
+			fluvio.QueueDefault: {MaxWorkers: 1},
+		},
+		Workers: workers,
+	})
+	require.NoError(t, err)
+	require.NoError(t, client.Start(ctx))
+
+	_, err = client.Enqueue(ctx, BlockArgs{})
+	require.NoError(t, err)
+
+	<-bw.started
+
+	stopDone := make(chan struct{})
+	go func() {
+		client.Stop()
+		close(stopDone)
+	}()
+
+	select {
+	case <-bw.done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("worker did not unblock within 500ms of Stop")
+	}
+
+	select {
+	case <-stopDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Stop did not return within 500ms")
+	}
+}
+
 func TestUniqueEnqueue(t *testing.T) {
 	_, client, _ := setupIntegration(t)
 	ctx := context.Background()

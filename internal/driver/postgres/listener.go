@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/software78/fluvio"
 )
 
 // Subscriber listens for PostgreSQL NOTIFY events and signals workers to fetch.
@@ -22,7 +24,7 @@ type Subscriber struct {
 	mu     sync.Mutex
 }
 
-func (d *Driver) Subscribe(ctx context.Context, queues []string) (*Subscriber, error) {
+func (d *Driver) Subscribe(ctx context.Context, queues []string) (fluvio.JobWakeSubscription, error) {
 	if d.pollOnly {
 		return nil, fmt.Errorf("fluvio/postgres: subscribe disabled in poll-only mode")
 	}

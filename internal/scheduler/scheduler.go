@@ -10,7 +10,7 @@ import (
 )
 
 type Scheduler struct {
-	driver       driver.Driver
+	driver       driver.SchedulerDriver
 	logger       *slog.Logger
 	interval     time.Duration
 	startupDelay time.Duration
@@ -19,7 +19,7 @@ type Scheduler struct {
 	doneCh       chan struct{}
 }
 
-func New(d driver.Driver, logger *slog.Logger, interval, startupDelay time.Duration) *Scheduler {
+func New(d driver.SchedulerDriver, logger *slog.Logger, interval, startupDelay time.Duration) *Scheduler {
 	if interval == 0 {
 		interval = 5 * time.Second
 	}

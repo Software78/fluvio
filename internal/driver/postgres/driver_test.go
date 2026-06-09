@@ -157,6 +157,38 @@ func TestEnqueueTx(t *testing.T) {
 	require.Equal(t, "tx_job", got.Kind)
 }
 
+func TestNackErrorTraceTrimming(t *testing.T) {
+	_, d := setupPostgres(t)
+	ctx := context.Background()
+
+	job, err := d.Enqueue(ctx, driver.EnqueueParams{
+		Kind:        "trace_trim_job",
+		Args:        []byte(`{}`),
+		MaxAttempts: 50,
+	})
+	require.NoError(t, err)
+
+	for i := 0; i < 30; i++ {
+		_, err = d.TickScheduled(ctx, time.Now())
+		require.NoError(t, err)
+
+		jobs, err := d.Fetch(ctx, []string{"default"}, "w1", 1)
+		require.NoError(t, err)
+		require.Len(t, jobs, 1)
+		require.Equal(t, job.ID, jobs[0].ID)
+
+		require.NoError(t, d.Nack(ctx, jobs[0].ID, errTest, time.Now()))
+	}
+
+	var traceLen int
+	err = d.Pool().QueryRow(ctx, `
+		SELECT jsonb_array_length(COALESCE(error_trace, '[]'::jsonb))
+		FROM fluvio_jobs WHERE id = $1
+	`, job.ID).Scan(&traceLen)
+	require.NoError(t, err)
+	require.LessOrEqual(t, traceLen, 25)
+}
+
 func TestNackRetryAndDead(t *testing.T) {
 	_, d := setupPostgres(t)
 	ctx := context.Background()
@@ -285,11 +317,12 @@ func BenchmarkEnqueueMany(b *testing.B) {
 		params[i] = driver.EnqueueParams{Kind: "bulk_bench", Args: []byte(`{}`)}
 	}
 
-	b.Run("CopyFrom", func(b *testing.B) {
+	b.Run("CopyFromStaging", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			_, err := d.EnqueueMany(ctx, params)
+			jobs, err := d.EnqueueMany(ctx, params)
 			require.NoError(b, err)
+			require.Len(b, jobs, n, "EnqueueMany must return all inserted jobs via staging COPY + INSERT RETURNING")
 			_, err = pool.Exec(ctx, `DELETE FROM fluvio_jobs`)
 			require.NoError(b, err)
 		}

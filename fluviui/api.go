@@ -207,7 +207,7 @@ func queueActionHandler(client apiClient) http.Handler {
 	})
 }
 
-func sseHandler(client apiClient) http.Handler {
+func sseHandler(client apiClient, cfg config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -220,7 +220,7 @@ func sseHandler(client apiClient) http.Handler {
 
 		ctx := r.Context()
 		statsTicker := time.NewTicker(5 * time.Second)
-		keepaliveTicker := time.NewTicker(15 * time.Second)
+		keepaliveTicker := time.NewTicker(cfg.keepaliveInterval)
 		defer statsTicker.Stop()
 		defer keepaliveTicker.Stop()
 

@@ -179,4 +179,12 @@ func (NoopDriver) ListWorkflows(context.Context, int, int) ([]*WorkflowState, er
 	return nil, nil
 }
 
+func (NoopDriver) EnqueueSequence(context.Context, []EnqueueParams) (string, error) {
+	return "", nil
+}
+
+func (NoopDriver) AdvanceSequence(context.Context, Tx, int64) error {
+	return nil
+}
+
 var _ Driver = NoopDriver{}

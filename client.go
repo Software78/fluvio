@@ -437,6 +437,43 @@ func (c *Client) EnqueueMany(ctx context.Context, items []EnqueueItem) ([]JobRow
 	return rows, nil
 }
 
+// EnqueueSequence inserts an ordered chain of jobs atomically. Step 0 is
+// immediately fetchable; later steps become pending one at a time as each
+// preceding step is acked.
+func (c *Client) EnqueueSequence(ctx context.Context, items []EnqueueItem) (string, error) {
+	if len(items) == 0 {
+		return "", fmt.Errorf("%w: sequence must have at least one step", ErrInvalidConfig)
+	}
+	params := make([]driver.EnqueueParams, len(items))
+	for i, item := range items {
+		o := applyEnqueueOptions(item.Opts)
+		if o.uniqueKey != nil {
+			return "", fmt.Errorf("%w: WithUniqueKey is not supported in EnqueueSequence", ErrInvalidConfig)
+		}
+		data, err := json.Marshal(item.Args)
+		if err != nil {
+			return "", err
+		}
+		argsData, encrypted, err := c.prepareJobArgs(data, o.encrypted)
+		if err != nil {
+			return "", err
+		}
+		params[i] = driver.EnqueueParams{
+			Queue:       o.queue,
+			Kind:        item.Args.Kind(),
+			Args:        argsData,
+			Priority:    o.priority,
+			MaxAttempts: o.maxAttempts,
+			ScheduledAt: o.scheduledAt,
+			UniqueKey:   o.uniqueKey,
+			Tags:        o.tags,
+			Metadata:    o.metadata,
+			Encrypted:   encrypted,
+		}
+	}
+	return c.driver.EnqueueSequence(ctx, params)
+}
+
 func (c *Client) GetJob(ctx context.Context, id int64) (*JobRow, error) {
 	job, err := c.driver.GetJob(ctx, id)
 	if err != nil {

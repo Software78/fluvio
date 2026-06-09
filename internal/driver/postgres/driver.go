@@ -293,9 +293,12 @@ func (d *Driver) Ack(ctx context.Context, jobID int64) error {
 	var kind string
 	var workflowID, workflowTaskID *string
 	var slotKey *string
+	var sequenceID *string
+	var sequencePos *int
 	err = tx.QueryRow(ctx, `
 		WITH old AS (
-			SELECT kind, workflow_id, workflow_task_id, concurrency_slot_key
+			SELECT kind, workflow_id, workflow_task_id, concurrency_slot_key,
+				sequence_id, sequence_pos
 			FROM fluvio_jobs WHERE id = $1 AND state = 'running'
 			FOR UPDATE
 		)
@@ -303,8 +306,9 @@ func (d *Driver) Ack(ctx context.Context, jobID int64) error {
 		SET state = 'completed', finalized_at = now(), concurrency_slot_key = NULL
 		FROM old
 		WHERE j.id = $1
-		RETURNING old.kind, old.workflow_id, old.workflow_task_id, old.concurrency_slot_key
-	`, jobID).Scan(&kind, &workflowID, &workflowTaskID, &slotKey)
+		RETURNING old.kind, old.workflow_id, old.workflow_task_id, old.concurrency_slot_key,
+			old.sequence_id, old.sequence_pos
+	`, jobID).Scan(&kind, &workflowID, &workflowTaskID, &slotKey, &sequenceID, &sequencePos)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fluvio.ErrJobNotFound
@@ -318,6 +322,12 @@ func (d *Driver) Ack(ctx context.Context, jobID int64) error {
 
 	if workflowID != nil && workflowTaskID != nil {
 		if err := d.completeWorkflowTaskTx(ctx, tx, *workflowID, *workflowTaskID); err != nil {
+			return err
+		}
+	}
+
+	if sequenceID != nil && sequencePos != nil {
+		if err := d.advanceSequenceTx(ctx, tx, *sequenceID, *sequencePos+1); err != nil {
 			return err
 		}
 	}

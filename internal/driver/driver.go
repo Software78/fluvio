@@ -183,4 +183,7 @@ type Driver interface {
 	FailWorkflowTask(ctx context.Context, workflowID, taskID string) error
 	GetWorkflow(ctx context.Context, workflowID string) (*WorkflowState, error)
 	ListWorkflows(ctx context.Context, limit, offset int) ([]*WorkflowState, error)
+
+	EnqueueSequence(ctx context.Context, params []EnqueueParams) (string, error)
+	AdvanceSequence(ctx context.Context, tx Tx, completedJobID int64) error
 }

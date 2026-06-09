@@ -31,6 +31,8 @@ func (NoopDriver) Nack(context.Context, int64, error, time.Time) error { return 
 
 func (NoopDriver) Cancel(context.Context, int64) error { return nil }
 
+func (NoopDriver) RunJobNow(context.Context, int64) error { return nil }
+
 func (NoopDriver) GetJob(context.Context, int64) (*Job, error) {
 	return nil, nil
 }
@@ -139,6 +141,10 @@ func (NoopDriver) Close() error { return nil }
 
 func (NoopDriver) SetConcurrencyLimit(context.Context, ConcurrencyLimit) error {
 	return nil
+}
+
+func (NoopDriver) ListConcurrencySlots(context.Context) ([]*ConcurrencySlot, error) {
+	return nil, nil
 }
 
 func (NoopDriver) RegisterConcurrencyLimit(string, int, bool) {}

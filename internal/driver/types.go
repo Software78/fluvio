@@ -35,6 +35,14 @@ type WorkflowTaskState struct {
 	JobID     *int64
 }
 
+// ConcurrencySlot is a row from fluvio_concurrency_slots.
+type ConcurrencySlot struct {
+	Kind          string
+	PartitionKey  string
+	Running       int
+	MaxConcurrent int
+}
+
 // ConcurrencyLimit configures per-kind concurrency caps stored in the database.
 type ConcurrencyLimit struct {
 	Kind          string

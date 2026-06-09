@@ -126,6 +126,7 @@ type Driver interface {
 	Ack(ctx context.Context, jobID int64) error
 	Nack(ctx context.Context, jobID int64, jobErr error, nextAttemptAt time.Time) error
 	Cancel(ctx context.Context, jobID int64) error
+	RunJobNow(ctx context.Context, jobID int64) error
 	GetJob(ctx context.Context, jobID int64) (*Job, error)
 	ListJobs(ctx context.Context, p ListJobsParams) ([]*Job, error)
 	ListDead(ctx context.Context, limit, offset int) ([]*Job, error)
@@ -170,6 +171,7 @@ type Driver interface {
 	Close() error
 
 	SetConcurrencyLimit(ctx context.Context, limit ConcurrencyLimit) error
+	ListConcurrencySlots(ctx context.Context) ([]*ConcurrencySlot, error)
 	// RegisterConcurrencyLimit records an in-memory limit for Fetch-time global enforcement.
 	// partitioned is true when the client uses a PartitionKeyFn (per-partition slots).
 	RegisterConcurrencyLimit(kind string, maxConcurrent int, partitioned bool)

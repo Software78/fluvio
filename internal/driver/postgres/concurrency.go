@@ -45,6 +45,28 @@ func (d *Driver) globalConcurrencyKinds() []string {
 	return kinds
 }
 
+func (d *Driver) ListConcurrencySlots(ctx context.Context) ([]*driver.ConcurrencySlot, error) {
+	rows, err := d.pool.Query(ctx, `
+		SELECT kind, partition_key, running, max_concurrent
+		FROM fluvio_concurrency_slots
+		ORDER BY kind, partition_key
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var slots []*driver.ConcurrencySlot
+	for rows.Next() {
+		var s driver.ConcurrencySlot
+		if err := rows.Scan(&s.Kind, &s.PartitionKey, &s.Running, &s.MaxConcurrent); err != nil {
+			return nil, err
+		}
+		slots = append(slots, &s)
+	}
+	return slots, rows.Err()
+}
+
 func (d *Driver) SetConcurrencyLimit(ctx context.Context, limit driver.ConcurrencyLimit) error {
 	if limit.Kind == "" {
 		return fmt.Errorf("%w: kind is required", fluvio.ErrInvalidConfig)

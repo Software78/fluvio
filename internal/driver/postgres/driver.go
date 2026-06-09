@@ -417,6 +417,23 @@ func (d *Driver) Cancel(ctx context.Context, jobID int64) error {
 	return nil
 }
 
+func (d *Driver) RunJobNow(ctx context.Context, jobID int64) error {
+	var queue string
+	err := d.pool.QueryRow(ctx, `
+		UPDATE fluvio_jobs
+		SET state = 'pending', scheduled_at = now()
+		WHERE id = $1 AND state = 'scheduled'
+		RETURNING queue
+	`, jobID).Scan(&queue)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fluvio.ErrJobNotFound
+		}
+		return err
+	}
+	return d.maybeNotifyQueue(ctx, d.pool, queue)
+}
+
 func (d *Driver) GetJob(ctx context.Context, jobID int64) (*driver.Job, error) {
 	row := d.pool.QueryRow(ctx, `SELECT `+jobColumns+` FROM fluvio_jobs WHERE id = $1`, jobID)
 	job, err := scanJob(row)

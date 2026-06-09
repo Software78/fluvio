@@ -520,6 +520,109 @@ func (c *Client) PurgeDeadJobs(ctx context.Context, before time.Time) (int64, er
 	return c.driver.PurgeDead(ctx, before)
 }
 
+// Cancel cancels a pending or scheduled job.
+func (c *Client) Cancel(ctx context.Context, jobID int64) error {
+	return c.driver.Cancel(ctx, jobID)
+}
+
+// RunJobNow promotes a scheduled job to pending immediately.
+func (c *Client) RunJobNow(ctx context.Context, jobID int64) error {
+	return c.driver.RunJobNow(ctx, jobID)
+}
+
+// EnqueueRawParams configures a raw-args enqueue for admin tooling.
+type EnqueueRawParams struct {
+	Kind        string
+	Queue       string
+	Args        json.RawMessage
+	Priority    int16
+	MaxAttempts int16
+	ScheduledAt *time.Time
+	UniqueKey   *string
+	Tags        []string
+	Metadata    json.RawMessage
+	Encrypted   bool
+}
+
+// EnqueueRaw enqueues a job with raw JSON args (no typed JobArgs).
+func (c *Client) EnqueueRaw(ctx context.Context, p EnqueueRawParams) (*JobRow, error) {
+	if p.Kind == "" {
+		return nil, fmt.Errorf("%w: kind is required", ErrInvalidConfig)
+	}
+	args := []byte(p.Args)
+	if len(args) == 0 {
+		args = []byte("{}")
+	}
+	metadata := []byte(p.Metadata)
+	if len(metadata) == 0 {
+		metadata = []byte("{}")
+	}
+	argsData, encrypted, err := c.prepareJobArgs(args, p.Encrypted)
+	if err != nil {
+		return nil, err
+	}
+	queue := p.Queue
+	if queue == "" {
+		queue = QueueDefault
+	}
+	job, err := c.driver.Enqueue(ctx, driver.EnqueueParams{
+		Queue:       queue,
+		Kind:        p.Kind,
+		Args:        argsData,
+		Priority:    p.Priority,
+		MaxAttempts: p.MaxAttempts,
+		ScheduledAt: p.ScheduledAt,
+		UniqueKey:   p.UniqueKey,
+		Tags:        p.Tags,
+		Metadata:    metadata,
+		Encrypted:   encrypted,
+	})
+	if err != nil {
+		return nil, err
+	}
+	row := driverJobToRow(job)
+	return &row, nil
+}
+
+// AddPeriodicJobRaw registers a cron schedule with raw JSON args.
+func (c *Client) AddPeriodicJobRaw(ctx context.Context, cronExpr, kind, queue string, args []byte, maxAttempts int16) error {
+	if kind == "" {
+		return fmt.Errorf("%w: kind is required", ErrInvalidConfig)
+	}
+	if len(args) == 0 {
+		args = []byte("{}")
+	}
+	if queue == "" {
+		queue = QueueDefault
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.periodic != nil {
+		return c.periodic.Register(ctx, cronExpr, kind, args, queue, maxAttempts)
+	}
+	c.pendingPeriodic = append(c.pendingPeriodic, pendingPeriodic{
+		cronExpr:    cronExpr,
+		kind:        kind,
+		data:        args,
+		queue:       queue,
+		maxAttempts: maxAttempts,
+	})
+	return nil
+}
+
+// ListConcurrencySlots returns all concurrency slot rows from the database.
+func (c *Client) ListConcurrencySlots(ctx context.Context) ([]driver.ConcurrencySlot, error) {
+	slots, err := c.driver.ListConcurrencySlots(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]driver.ConcurrencySlot, len(slots))
+	for i, s := range slots {
+		out[i] = *s
+	}
+	return out, nil
+}
+
 func (c *Client) PauseQueue(ctx context.Context, queue string) error {
 	return c.driver.PauseQueue(ctx, queue)
 }

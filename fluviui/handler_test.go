@@ -18,7 +18,9 @@ import (
 	"github.com/software78/fluvio/internal/driver"
 )
 
-type mockClient struct{}
+type mockClient struct {
+	stubAPIClient
+}
 
 func (mockClient) ListQueues(ctx context.Context) ([]*driver.QueueStats, error) {
 	return []*driver.QueueStats{{
@@ -44,7 +46,9 @@ func (mockClient) ListWorkers(ctx context.Context) ([]fluvio.WorkerInstance, err
 	return nil, nil
 }
 
-type errorClient struct{}
+type errorClient struct {
+	stubAPIClient
+}
 
 func (errorClient) ListQueues(ctx context.Context) ([]*driver.QueueStats, error) {
 	return nil, errors.New("pq: connection refused to 10.0.0.1:5432")
@@ -65,6 +69,7 @@ func (errorClient) ListWorkers(ctx context.Context) ([]fluvio.WorkerInstance, er
 }
 
 type pagingClient struct {
+	stubAPIClient
 	lastLimit  int
 	lastOffset int
 }
@@ -195,7 +200,7 @@ func TestCORSDefaultOrigin(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
-	require.Equal(t, "GET, POST, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
+	require.Equal(t, "GET, POST, PUT, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
 	require.Equal(t, "Content-Type", resp.Header.Get("Access-Control-Allow-Headers"))
 }
 
@@ -223,7 +228,7 @@ func TestCORSOptionsPreflight(t *testing.T) {
 
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 	require.Equal(t, "https://ui.example.com", resp.Header.Get("Access-Control-Allow-Origin"))
-	require.Equal(t, "GET, POST, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
+	require.Equal(t, "GET, POST, PUT, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
 	require.Equal(t, "Content-Type", resp.Header.Get("Access-Control-Allow-Headers"))
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)

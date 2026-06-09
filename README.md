@@ -160,13 +160,30 @@ Endpoints:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/fluvio/api/queues` | List queue stats |
+| GET | `/fluvio/api/queues/{name}` | Queue stats plus fleet worker capacity |
 | POST | `/fluvio/api/queues/{name}/pause` | Pause a queue |
 | POST | `/fluvio/api/queues/{name}/resume` | Resume a queue |
 | GET | `/fluvio/api/jobs` | List jobs (`queue`, `state`, `kind`, `limit`, `offset` query params) |
+| POST | `/fluvio/api/jobs` | Enqueue a job (`kind`, `queue`, `args`, optional schedule/tags) |
 | GET | `/fluvio/api/jobs/{id}` | Get job details |
+| POST | `/fluvio/api/jobs/{id}/cancel` | Cancel a pending or scheduled job |
+| POST | `/fluvio/api/jobs/{id}/retry` | Run a scheduled job now |
+| GET | `/fluvio/api/dead` | List dead-letter jobs (`limit`, `offset`) |
+| POST | `/fluvio/api/dead/{id}/replay` | Replay one dead job |
+| POST | `/fluvio/api/dead/replay` | Bulk replay (`{ "ids": [1,2,3] }`) |
+| POST | `/fluvio/api/dead/purge` | Purge dead jobs before timestamp (`{ "before": "..." }`) |
+| GET | `/fluvio/api/periodic` | List periodic (cron) jobs |
+| POST | `/fluvio/api/periodic` | Register a periodic job |
+| POST | `/fluvio/api/periodic/{kind}/pause` | Pause a periodic job |
+| POST | `/fluvio/api/periodic/{kind}/resume` | Resume a periodic job |
+| GET | `/fluvio/api/workflows` | List workflows (`limit`, `offset`) |
+| GET | `/fluvio/api/workflows/{id}` | Get workflow detail |
+| GET | `/fluvio/api/concurrency` | List concurrency slots |
+| PUT | `/fluvio/api/concurrency/{kind}` | Set per-kind concurrency limit |
+| GET | `/fluvio/api/workers` | List live worker instances |
 | GET | `/fluvio/api/events` | SSE stream of queue stats (every 5s) |
 
-`GET /fluvio/api/jobs` returns a paginated object: `{ "jobs": [...], "limit": 50, "offset": 0, "has_more": false }`. Default `limit` is 50 (max 100). Use `has_more` to fetch the next page with a higher `offset`.
+`GET /fluvio/api/jobs` and `GET /fluvio/api/dead` return a paginated object: `{ "jobs": [...], "limit": 50, "offset": 0, "has_more": false }`. Default `limit` is 50 (max 100). Use `has_more` to fetch the next page with a higher `offset`. Job objects use snake_case JSON field names.
 
 ## Advanced features
 

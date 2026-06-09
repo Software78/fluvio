@@ -51,7 +51,7 @@ func corsMiddleware(cfg config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", cfg.allowedOrigin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
@@ -85,8 +85,16 @@ func handlerFor(client apiClient, opts ...Option) http.Handler {
 
 	mux.Handle("/fluvio/api/events", wrap(sseHandler(client, cfg)))
 	mux.Handle("/fluvio/api/workers", wrap(workersHandler(client)))
-	mux.Handle("/fluvio/api/jobs", wrap(jobsHandler(client)))
-	mux.Handle("/fluvio/api/jobs/", wrap(jobDetailHandler(client)))
+	mux.Handle("/fluvio/api/dead/", wrap(deadHandler(client)))
+	mux.Handle("/fluvio/api/dead", wrap(deadHandler(client)))
+	mux.Handle("/fluvio/api/jobs/", wrap(jobsRouter(client)))
+	mux.Handle("/fluvio/api/jobs", wrap(jobsRouter(client)))
+	mux.Handle("/fluvio/api/periodic/", wrap(periodicHandler(client)))
+	mux.Handle("/fluvio/api/periodic", wrap(periodicHandler(client)))
+	mux.Handle("/fluvio/api/workflows/", wrap(workflowsHandler(client)))
+	mux.Handle("/fluvio/api/workflows", wrap(workflowsHandler(client)))
+	mux.Handle("/fluvio/api/concurrency/", wrap(concurrencyHandler(client)))
+	mux.Handle("/fluvio/api/concurrency", wrap(concurrencyHandler(client)))
 	mux.Handle("/fluvio/api/queues", wrap(queuesHandler(client)))
 	mux.Handle("/fluvio/api/queues/", wrap(queueActionHandler(client)))
 

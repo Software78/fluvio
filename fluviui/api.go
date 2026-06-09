@@ -24,9 +24,25 @@ type apiClient interface {
 	ListQueues(ctx context.Context) ([]*driver.QueueStats, error)
 	ListJobs(ctx context.Context, queue, state, kind string, limit, offset int) ([]fluvio.JobRow, error)
 	GetJob(ctx context.Context, id int64) (*fluvio.JobRow, error)
+	ListDeadJobs(ctx context.Context, limit, offset int) ([]fluvio.JobRow, error)
+	ReplayDeadJob(ctx context.Context, jobID int64) error
+	PurgeDeadJobs(ctx context.Context, before time.Time) (int64, error)
+	EnqueueRaw(ctx context.Context, p fluvio.EnqueueRawParams) (*fluvio.JobRow, error)
+	Cancel(ctx context.Context, jobID int64) error
+	RunJobNow(ctx context.Context, jobID int64) error
 	PauseQueue(ctx context.Context, queue string) error
 	ResumeQueue(ctx context.Context, queue string) error
+	QueueStats(ctx context.Context, queue string) (*driver.QueueStats, error)
+	QueueWorkerCapacity(ctx context.Context, queue string) (instances, maxConcurrent int, err error)
 	ListWorkers(ctx context.Context) ([]fluvio.WorkerInstance, error)
+	ListPeriodicJobs(ctx context.Context) ([]driver.PeriodicJob, error)
+	AddPeriodicJobRaw(ctx context.Context, cronExpr, kind, queue string, args []byte, maxAttempts int16) error
+	PausePeriodicJob(ctx context.Context, kind string) error
+	ResumePeriodicJob(ctx context.Context, kind string) error
+	ListWorkflows(ctx context.Context, limit, offset int) ([]*driver.WorkflowState, error)
+	GetWorkflow(ctx context.Context, workflowID string) (*driver.WorkflowState, error)
+	ListConcurrencySlots(ctx context.Context) ([]driver.ConcurrencySlot, error)
+	SetConcurrencyLimit(ctx context.Context, cfg fluvio.ConcurrencyLimitConfig) error
 }
 
 // QueueStatsView mirrors driver stats for JSON API responses.
@@ -52,10 +68,10 @@ type WorkerView struct {
 
 // JobsPage is a paginated jobs list response.
 type JobsPage struct {
-	Jobs    []fluvio.JobRow `json:"jobs"`
-	Limit   int             `json:"limit"`
-	Offset  int             `json:"offset"`
-	HasMore bool            `json:"has_more"`
+	Jobs    []JobRowView `json:"jobs"`
+	Limit   int          `json:"limit"`
+	Offset  int          `json:"offset"`
+	HasMore bool         `json:"has_more"`
 }
 
 func parseJobsPagination(q url.Values) (limit, offset int, err error) {
@@ -154,7 +170,7 @@ func jobsHandler(client apiClient) http.Handler {
 		}
 
 		writeJSON(w, http.StatusOK, JobsPage{
-			Jobs:    jobs,
+			Jobs:    jobRowsToViews(jobs),
 			Limit:   limit,
 			Offset:  offset,
 			HasMore: hasMore,
@@ -162,31 +178,13 @@ func jobsHandler(client apiClient) http.Handler {
 	})
 }
 
-func jobDetailHandler(client apiClient) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		idStr := strings.TrimPrefix(r.URL.Path, "/fluvio/api/jobs/")
-		id, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil || id <= 0 {
-			http.NotFound(w, r)
-			return
-		}
-		job, err := client.GetJob(r.Context(), id)
-		if err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, fluvio.ErrJobNotFound) {
-				status = http.StatusNotFound
-			}
-			writeAPIError(w, status, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, job)
-	})
-}
-
 func queueActionHandler(client apiClient) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/fluvio/api/queues/")
+		path = strings.TrimSuffix(path, "/")
 		switch {
+		case path == "":
+			http.NotFound(w, r)
 		case strings.HasSuffix(path, "/pause") && r.Method == http.MethodPost:
 			queue := strings.TrimSuffix(path, "/pause")
 			if err := client.PauseQueue(r.Context(), queue); err != nil {
@@ -201,10 +199,36 @@ func queueActionHandler(client apiClient) http.Handler {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		case r.Method == http.MethodGet:
+			queueDetailHandler(client, path)(w, r)
 		default:
 			http.NotFound(w, r)
 		}
 	})
+}
+
+func queueDetailHandler(client apiClient, queue string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		stats, err := client.QueueStats(r.Context(), queue)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		instances, capacity, err := client.QueueWorkerCapacity(r.Context(), queue)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, QueueDetailView{
+			QueueStatsView: QueueStatsView{
+				Queue: stats.Queue, Pending: stats.Pending, Running: stats.Running,
+				Scheduled: stats.Scheduled, Dead: stats.Dead, Completed: stats.Completed,
+				Failed: stats.Failed, Cancelled: stats.Cancelled, Paused: stats.Paused,
+			},
+			WorkerInstances: instances,
+			WorkerCapacity:  capacity,
+		})
+	}
 }
 
 func sseHandler(client apiClient, cfg config) http.Handler {
@@ -259,6 +283,23 @@ func writeAPIError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": apiErrorMessage(status, err)})
 }
 
+func apiStatusForError(err error) int {
+	switch {
+	case errors.Is(err, fluvio.ErrJobNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, fluvio.ErrWorkflowNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, fluvio.ErrInvalidJobState):
+		return http.StatusBadRequest
+	case errors.Is(err, fluvio.ErrInvalidConfig):
+		return http.StatusBadRequest
+	case errors.Is(err, fluvio.ErrUniqueConflict):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 func apiErrorMessage(status int, err error) string {
 	if err == nil {
 		return "unknown error"
@@ -266,10 +307,14 @@ func apiErrorMessage(status int, err error) string {
 	switch {
 	case errors.Is(err, fluvio.ErrJobNotFound):
 		return "job not found"
+	case errors.Is(err, fluvio.ErrWorkflowNotFound):
+		return "workflow not found"
 	case errors.Is(err, fluvio.ErrInvalidJobState):
 		return "invalid job state"
 	case errors.Is(err, fluvio.ErrInvalidConfig):
 		return "invalid request"
+	case errors.Is(err, fluvio.ErrUniqueConflict):
+		return "job with unique key already exists"
 	default:
 		if status == http.StatusNotFound {
 			return "not found"

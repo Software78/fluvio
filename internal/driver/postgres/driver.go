@@ -515,7 +515,7 @@ func (d *Driver) ReplayDead(ctx context.Context, jobID int64) error {
 	err = tx.QueryRow(ctx, `
 		SELECT queue, kind, args, metadata, tags, encrypted
 		FROM fluvio_dead_jobs
-		WHERE id = $1 AND replayed_at IS NULL
+		WHERE id = $1
 		FOR UPDATE
 	`, jobID).Scan(&queue, &kind, &args, &metadata, &tags, &encrypted)
 	if err != nil {
@@ -569,7 +569,7 @@ func (d *Driver) ReplayDead(ctx context.Context, jobID int64) error {
 	}
 
 	tag, err := tx.Exec(ctx, `
-		UPDATE fluvio_dead_jobs SET replayed_at = now() WHERE id = $1
+		DELETE FROM fluvio_dead_jobs WHERE id = $1
 	`, jobID)
 	if err != nil {
 		return err
@@ -810,9 +810,12 @@ func (d *Driver) verifyAdvisoryLock(ctx context.Context) error {
 	var held int
 	err := d.leaderConn.QueryRow(ctx, `
 		SELECT COUNT(*) FROM pg_locks
-		WHERE locktype = 'advisory' AND classid = 0 AND objid = $1
+		WHERE locktype = 'advisory'
+		  AND classid = $1
+		  AND objid = $2
+		  AND objsubid = 2
 		  AND pid = pg_backend_pid()
-	`, leaderLockID).Scan(&held)
+	`, int32(leaderLockID>>32), int32(leaderLockID&0xffffffff)).Scan(&held)
 	if err != nil {
 		return errLeaderLost
 	}

@@ -281,15 +281,50 @@ func TestReplayDead(t *testing.T) {
 	require.Equal(t, "pending", got.State)
 	require.Equal(t, int16(0), got.Attempt)
 
-	var replayedAt *time.Time
+	var deadCount int
 	err = d.Pool().QueryRow(ctx, `
-		SELECT replayed_at FROM fluvio_dead_jobs WHERE id = $1
-	`, job.ID).Scan(&replayedAt)
+		SELECT COUNT(*) FROM fluvio_dead_jobs WHERE id = $1
+	`, job.ID).Scan(&deadCount)
 	require.NoError(t, err)
-	require.NotNil(t, replayedAt)
+	require.Equal(t, 0, deadCount)
 
 	err = d.ReplayDead(ctx, job.ID)
 	require.ErrorIs(t, err, fluvio.ErrJobNotFound)
+}
+
+func TestReplayDeadThenRedeath(t *testing.T) {
+	_, d := setupPostgres(t)
+	ctx := context.Background()
+
+	job, err := d.Enqueue(ctx, driver.EnqueueParams{
+		Kind:        "replay_redeath",
+		Args:        []byte(`{}`),
+		MaxAttempts: 1,
+	})
+	require.NoError(t, err)
+
+	jobs, err := d.Fetch(ctx, []string{"default"}, "w1", 1)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	require.NoError(t, d.Nack(ctx, jobs[0].ID, errTest, time.Now()))
+
+	require.NoError(t, d.ReplayDead(ctx, job.ID))
+
+	jobs, err = d.Fetch(ctx, []string{"default"}, "w1", 1)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	require.NoError(t, d.Nack(ctx, jobs[0].ID, errTest, time.Now()))
+
+	got, err := d.GetJob(ctx, job.ID)
+	require.NoError(t, err)
+	require.Equal(t, "dead", got.State)
+
+	var deadCount int
+	err = d.Pool().QueryRow(ctx, `
+		SELECT COUNT(*) FROM fluvio_dead_jobs WHERE id = $1
+	`, job.ID).Scan(&deadCount)
+	require.NoError(t, err)
+	require.Equal(t, 1, deadCount)
 }
 
 var errTest = testError{}

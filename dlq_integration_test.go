@@ -108,7 +108,35 @@ func TestDLQExhaustReplayPurge(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, jobCount)
 
-	// Purge dead jobs before now; we expect the original dead row is older than 'before'.
+	var deadCount int
+	err = pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM fluvio_dead_jobs
+		WHERE id = $1
+	`, jobID).Scan(&deadCount)
+	require.NoError(t, err)
+	require.Equal(t, 0, deadCount)
+}
+
+func TestDLQPurgeUnreplayed(t *testing.T) {
+	pool, client := setupDLQIntegration(t)
+	ctx := context.Background()
+
+	require.NoError(t, client.Start(ctx))
+	t.Cleanup(func() { client.Stop() })
+
+	row, err := client.Enqueue(ctx, FailArgs{}, fluvio.WithMaxAttempts(1))
+	require.NoError(t, err)
+	jobID := row.ID
+
+	require.Eventually(t, func() bool {
+		job, err := client.GetJob(ctx, jobID)
+		if err != nil {
+			return false
+		}
+		return job.State == fluvio.JobStateDead
+	}, 10*time.Second, 100*time.Millisecond)
+
 	time.Sleep(20 * time.Millisecond)
 	before := time.Now()
 	purged, err := client.PurgeDeadJobs(ctx, before)
@@ -117,9 +145,7 @@ func TestDLQExhaustReplayPurge(t *testing.T) {
 
 	var deadCount int
 	err = pool.QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM fluvio_dead_jobs
-		WHERE id = $1
+		SELECT COUNT(*) FROM fluvio_dead_jobs WHERE id = $1
 	`, jobID).Scan(&deadCount)
 	require.NoError(t, err)
 	require.Equal(t, 0, deadCount)

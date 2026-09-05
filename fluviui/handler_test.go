@@ -252,10 +252,69 @@ func TestCORSWithAllowedOrigin(t *testing.T) {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/fluvio/api/queues")
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/fluvio/api/queues", nil)
+	require.NoError(t, err)
+	req.Header.Set("Origin", "https://ui.example.com")
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, "https://ui.example.com", resp.Header.Get("Access-Control-Allow-Origin"))
+	require.Equal(t, "Origin", resp.Header.Get("Vary"))
+}
+
+func TestCORSRejectsUnknownOrigin(t *testing.T) {
+	h := handlerFor(mockClient{}, WithAllowedOrigin("https://ui.example.com"))
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/fluvio/api/queues", nil)
+	require.NoError(t, err)
+	req.Header.Set("Origin", "https://evil.example.com")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"))
+}
+
+func TestCORSWithAllowedOriginsMultiple(t *testing.T) {
+	h := handlerFor(mockClient{}, WithAllowedOrigins("https://a.example.com", "https://b.example.com"))
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	for _, origin := range []string{"https://a.example.com", "https://b.example.com"} {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/fluvio/api/queues", nil)
+		require.NoError(t, err)
+		req.Header.Set("Origin", origin)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		require.Equal(t, origin, resp.Header.Get("Access-Control-Allow-Origin"))
+		resp.Body.Close()
+	}
+}
+
+func TestCORSWithAllowedOriginsWildcardSubdomain(t *testing.T) {
+	h := handlerFor(mockClient{}, WithAllowedOrigins("https://*.sandbox.example.com"))
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	allowed := "https://pr-42.sandbox.example.com"
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/fluvio/api/queues", nil)
+	require.NoError(t, err)
+	req.Header.Set("Origin", allowed)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.Equal(t, allowed, resp.Header.Get("Access-Control-Allow-Origin"))
+	resp.Body.Close()
+
+	for _, rejected := range []string{"https://sandbox.example.com", "https://a.b.sandbox.example.com", "https://sandbox.example.com.evil.com"} {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/fluvio/api/queues", nil)
+		require.NoError(t, err)
+		req.Header.Set("Origin", rejected)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		require.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"), "origin %q should not match", rejected)
+		resp.Body.Close()
+	}
 }
 
 func TestCORSOptionsPreflight(t *testing.T) {
@@ -265,6 +324,7 @@ func TestCORSOptionsPreflight(t *testing.T) {
 
 	req, err := http.NewRequest(http.MethodOptions, srv.URL+"/fluvio/api/queues", nil)
 	require.NoError(t, err)
+	req.Header.Set("Origin", "https://ui.example.com")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()

@@ -244,7 +244,7 @@ func TestCORSDefaultOrigin(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
 	require.Equal(t, "GET, POST, PUT, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
-	require.Equal(t, "Content-Type", resp.Header.Get("Access-Control-Allow-Headers"))
+	require.Equal(t, "Content-Type, Authorization", resp.Header.Get("Access-Control-Allow-Headers"))
 }
 
 func TestCORSWithAllowedOrigin(t *testing.T) {
@@ -332,10 +332,48 @@ func TestCORSOptionsPreflight(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 	require.Equal(t, "https://ui.example.com", resp.Header.Get("Access-Control-Allow-Origin"))
 	require.Equal(t, "GET, POST, PUT, OPTIONS", resp.Header.Get("Access-Control-Allow-Methods"))
-	require.Equal(t, "Content-Type", resp.Header.Get("Access-Control-Allow-Headers"))
+	require.Equal(t, "Content-Type, Authorization", resp.Header.Get("Access-Control-Allow-Headers"))
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	require.Empty(t, body)
+}
+
+func TestCORSWithAllowedHeadersOverride(t *testing.T) {
+	h := handlerFor(mockClient{}, WithAllowedHeaders("Content-Type", "X-Custom-Token"))
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/fluvio/api/queues")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, "Content-Type, X-Custom-Token", resp.Header.Get("Access-Control-Allow-Headers"))
+}
+
+// TestCORSHeadersSurviveMiddlewareRejection guards against a real bug: CORS
+// headers must be set before consumer-supplied auth middleware runs, so that
+// an unauthorized (e.g. 401) response still carries Access-Control-Allow-Origin.
+// Otherwise the browser reports an opaque CORS failure instead of a readable
+// 401, which is exactly what happened with Basic Auth in front of this
+// handler in a cross-origin deployment.
+func TestCORSHeadersSurviveMiddlewareRejection(t *testing.T) {
+	rejectAll := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		})
+	}
+	h := handlerFor(mockClient{}, WithAllowedOrigin("https://ui.example.com"), WithMiddleware(rejectAll))
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/fluvio/api/queues", nil)
+	require.NoError(t, err)
+	req.Header.Set("Origin", "https://ui.example.com")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, "https://ui.example.com", resp.Header.Get("Access-Control-Allow-Origin"))
 }
 
 func TestJobDetailRejectsInvalidID(t *testing.T) {

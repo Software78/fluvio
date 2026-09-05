@@ -16,6 +16,7 @@ type config struct {
 	// exact origin ("https://ui.example.com") or a single-level wildcard
 	// subdomain pattern ("https://*.sandbox.example.com").
 	allowedOrigins    []string
+	allowedHeaders    []string
 	keepaliveInterval time.Duration
 	middleware        func(http.Handler) http.Handler
 }
@@ -54,6 +55,18 @@ func WithAllowedOrigins(origins ...string) Option {
 	}
 }
 
+// WithAllowedHeaders overrides the request headers permitted by
+// Access-Control-Allow-Headers. Defaults to "Content-Type, Authorization" --
+// the Authorization default matters whenever WithMiddleware enforces Basic
+// or Bearer auth on a cross-origin deployment: without it in the allowlist,
+// browsers refuse to send the Authorization header at all, and the preflight
+// for every authenticated endpoint fails before the real request is sent.
+func WithAllowedHeaders(headers ...string) Option {
+	return func(c *config) {
+		c.allowedHeaders = headers
+	}
+}
+
 // WithMiddleware wraps all API handlers (e.g. for authentication).
 func WithMiddleware(mw func(http.Handler) http.Handler) Option {
 	return func(c *config) {
@@ -71,6 +84,7 @@ func WithKeepaliveInterval(d time.Duration) Option {
 
 func defaultConfig() config {
 	return config{
+		allowedHeaders:    []string{"Content-Type", "Authorization"},
 		keepaliveInterval: 15 * time.Second,
 	}
 }
@@ -126,7 +140,7 @@ func corsMiddleware(cfg config) func(http.Handler) http.Handler {
 				}
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", strings.Join(cfg.allowedHeaders, ", "))
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
 				return
@@ -150,10 +164,18 @@ func handlerFor(client apiClient, opts ...Option) http.Handler {
 	mux := http.NewServeMux()
 	cm := corsMiddleware(cfg)
 	wrap := func(h http.Handler) http.Handler {
-		h = cm(h)
+		// CORS headers must be set before auth runs, not after: if
+		// cfg.middleware (e.g. Basic Auth) is the outer wrapper, an
+		// unauthenticated request's 401 response never reaches corsMiddleware
+		// at all, so it comes back with no Access-Control-Allow-Origin and
+		// the browser reports an opaque CORS failure instead of a readable
+		// 401. Wrapping CORS outermost means it always runs first and its
+		// headers survive regardless of what the inner middleware/handler
+		// decides to do with the response.
 		if cfg.middleware != nil {
 			h = cfg.middleware(h)
 		}
+		h = cm(h)
 		return h
 	}
 
